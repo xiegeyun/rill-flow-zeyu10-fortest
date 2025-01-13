@@ -42,6 +42,7 @@ import com.weibo.rill.flow.olympicene.traversal.runners.TaskRunner;
 import com.weibo.rill.flow.olympicene.traversal.runners.TimeCheckRunner;
 import io.opentelemetry.api.trace.Span;
 import io.opentelemetry.api.trace.Tracer;
+import io.opentelemetry.context.Scope;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.collections.CollectionUtils;
 import org.apache.commons.lang3.StringUtils;
@@ -119,11 +120,13 @@ public class DAGOperations {
                 .setAttribute("task.category", taskInfo.getTask().getCategory())
                 .startSpan();
 
-        TaskRunner runner = selectRunner(taskInfo);
-        Supplier<ExecutionResult> basicActions = () -> runner.run(executionId, taskInfo, context);
+        try (Scope ignore = span.makeCurrent()) {
 
-        Supplier<ExecutionResult> supplier = PluginHelper.pluginInvokeChain(basicActions, params, SystemConfig.TASK_RUN_CUSTOMIZED_PLUGINS);
-        ExecutionResult executionResult = supplier.get();
+            TaskRunner runner = selectRunner(taskInfo);
+            Supplier<ExecutionResult> basicActions = () -> runner.run(executionId, taskInfo, context);
+
+            Supplier<ExecutionResult> supplier = PluginHelper.pluginInvokeChain(basicActions, params, SystemConfig.TASK_RUN_CUSTOMIZED_PLUGINS);
+            ExecutionResult executionResult = supplier.get();
 
         /*
           任务执行后结果类型
@@ -134,31 +137,33 @@ public class DAGOperations {
           2. 流程控制类任务 foreach/choice
             2.1 触发能够执行的子任务
          */
-        // 对应1.1
-        if (isTaskCompleted(executionResult)) {
-            dagTraversal.submitTraversal(executionId, taskInfo.getName());
-            invokeTaskCallback(executionId, taskInfo, context);
+            // 对应1.1
+            if (isTaskCompleted(executionResult)) {
+                dagTraversal.submitTraversal(executionId, taskInfo.getName());
+                invokeTaskCallback(executionId, taskInfo, context);
+            }
+            // 对应1.2
+            if (executionResult.getTaskStatus() == TaskStatus.RUNNING) {
+                Timeline timeline = Optional.ofNullable(taskInfo.getTask()).map(BaseTask::getTimeline).orElse(null);
+                Optional.ofNullable(getTimeoutSeconds(executionResult.getInput(), new HashMap<>(), timeline))
+                        .ifPresent(timeoutSeconds -> timeCheckRunner.addTaskToTimeoutCheck(executionId, taskInfo, timeoutSeconds));
+            }
+            // 对应1.3
+            if (executionResult.getTaskStatus() == TaskStatus.READY && executionResult.isNeedRetry()) {
+                runTaskWithTimeInterval(executionId, executionResult.getTaskInfo(),
+                        executionResult.getContext(), executionResult.getRetryIntervalInSeconds());
+            }
+            // 对应2.1
+            if (CollectionUtils.isNotEmpty(executionResult.getSubTaskInfosAndContext())) {
+                executionResult.getSubTaskInfosAndContext()
+                        .forEach(subTaskInfosAndContext -> {
+                            dagTraversal.submitTasks(executionId, subTaskInfosAndContext.getLeft(), subTaskInfosAndContext.getRight());
+                            safeSleep(10);
+                        });
+            }
+        } finally {
+            span.end();
         }
-        // 对应1.2
-        if (executionResult.getTaskStatus() == TaskStatus.RUNNING) {
-            Timeline timeline = Optional.ofNullable(taskInfo.getTask()).map(BaseTask::getTimeline).orElse(null);
-            Optional.ofNullable(getTimeoutSeconds(executionResult.getInput(), new HashMap<>(), timeline))
-                    .ifPresent(timeoutSeconds -> timeCheckRunner.addTaskToTimeoutCheck(executionId, taskInfo, timeoutSeconds));
-        }
-        // 对应1.3
-        if (executionResult.getTaskStatus() == TaskStatus.READY && executionResult.isNeedRetry()) {
-            runTaskWithTimeInterval(executionId, executionResult.getTaskInfo(),
-                    executionResult.getContext(), executionResult.getRetryIntervalInSeconds());
-        }
-        // 对应2.1
-        if (CollectionUtils.isNotEmpty(executionResult.getSubTaskInfosAndContext())) {
-            executionResult.getSubTaskInfosAndContext()
-                    .forEach(subTaskInfosAndContext -> {
-                        dagTraversal.submitTasks(executionId, subTaskInfosAndContext.getLeft(), subTaskInfosAndContext.getRight());
-                        safeSleep(10);
-                    });
-        }
-        span.end();
     }
 
     private Long getTimeoutSeconds(Map<String, Object> input, Map<String, Object> context, Timeline timeline) {
