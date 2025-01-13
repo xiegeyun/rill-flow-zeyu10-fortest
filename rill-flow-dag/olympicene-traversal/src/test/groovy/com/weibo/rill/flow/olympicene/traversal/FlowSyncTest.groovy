@@ -17,6 +17,7 @@ import com.weibo.rill.flow.olympicene.traversal.checker.DefaultTimeChecker
 import com.weibo.rill.flow.olympicene.traversal.config.OlympiceneFacade
 import com.weibo.rill.flow.olympicene.traversal.dispatcher.DAGDispatcher
 import com.weibo.rill.flow.olympicene.traversal.result.LocalSyncDAGResultHandler
+import io.opentelemetry.api.trace.Tracer
 import spock.lang.Specification
 
 import java.util.concurrent.ExecutorService
@@ -29,7 +30,7 @@ class FlowSyncTest extends Specification {
     DAGResultHandler dagResultHandler = new LocalSyncDAGResultHandler()
     ExecutorService executor = Executors.newFixedThreadPool(10)
     SwitcherManager switcherManager = Mock(SwitcherManager.class)
-    Olympicene olympicene = OlympiceneFacade.build(dagStorage, dagStorage, dagStorageProcedure, null, dagResultHandler, Mock(DAGDispatcher.class), Mock(DefaultTimeChecker.class), executor, switcherManager)
+    Olympicene olympicene = OlympiceneFacade.build(dagStorage, dagStorage, dagStorageProcedure, null, dagResultHandler, Mock(DAGDispatcher.class), Mock(DefaultTimeChecker.class), executor, switcherManager, Mock(Tracer))
 
     def "test one passTask dag should work well"() {
         given:

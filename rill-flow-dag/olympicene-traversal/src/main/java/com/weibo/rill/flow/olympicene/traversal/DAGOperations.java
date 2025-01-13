@@ -40,6 +40,8 @@ import com.weibo.rill.flow.olympicene.traversal.helper.PluginHelper;
 import com.weibo.rill.flow.olympicene.traversal.runners.DAGRunner;
 import com.weibo.rill.flow.olympicene.traversal.runners.TaskRunner;
 import com.weibo.rill.flow.olympicene.traversal.runners.TimeCheckRunner;
+import io.opentelemetry.api.trace.Span;
+import io.opentelemetry.api.trace.Tracer;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.collections.CollectionUtils;
 import org.apache.commons.lang3.StringUtils;
@@ -61,6 +63,7 @@ public class DAGOperations {
     private final DAGTraversal dagTraversal;
     private final Callback<DAGCallbackInfo> callback;
     private final DAGResultHandler dagResultHandler;
+    private final Tracer tracer;
 
 
     public static final BiConsumer<Runnable, Integer> OPERATE_WITH_RETRY = (operation, retryTimes) -> {
@@ -79,7 +82,7 @@ public class DAGOperations {
 
     public DAGOperations(ExecutorService runnerExecutor, Map<String, TaskRunner> taskRunners, DAGRunner dagRunner,
                          TimeCheckRunner timeCheckRunner, DAGTraversal dagTraversal, Callback<DAGCallbackInfo> callback,
-                         DAGResultHandler dagResultHandler) {
+                         DAGResultHandler dagResultHandler, Tracer tracer) {
         this.runnerExecutor = runnerExecutor;
         this.taskRunners = taskRunners;
         this.dagRunner = dagRunner;
@@ -87,6 +90,7 @@ public class DAGOperations {
         this.dagTraversal = dagTraversal;
         this.callback = callback;
         this.dagResultHandler = dagResultHandler;
+        this.tracer = tracer;
     }
 
     public void runTasks(String executionId, Collection<Pair<TaskInfo, Map<String, Object>>> taskInfoToContexts) {
@@ -108,6 +112,12 @@ public class DAGOperations {
         params.put(EXECUTION_ID, executionId);
         params.put("taskInfo", taskInfo);
         params.put("context", context);
+
+        Span span = tracer.spanBuilder("runTask")
+                .setAttribute("execution.id", executionId)
+                .setAttribute("task.name", taskInfo.getName())
+                .setAttribute("task.category", taskInfo.getTask().getCategory())
+                .startSpan();
 
         TaskRunner runner = selectRunner(taskInfo);
         Supplier<ExecutionResult> basicActions = () -> runner.run(executionId, taskInfo, context);
@@ -148,6 +158,7 @@ public class DAGOperations {
                         safeSleep(10);
                     });
         }
+        span.end();
     }
 
     private Long getTimeoutSeconds(Map<String, Object> input, Map<String, Object> context, Timeline timeline) {
@@ -232,11 +243,15 @@ public class DAGOperations {
     }
 
     public void submitDAG(String executionId, DAG dag, DAGSettings settings, Map<String, Object> data, NotifyInfo notifyInfo) {
+        Span span = tracer.spanBuilder("submitDAG")
+                .setAttribute("execution.id", executionId)
+                .startSpan();
         log.info("submitDAG task begin to execute executionId:{} notifyInfo:{}", executionId, notifyInfo);
         ExecutionResult executionResult = dagRunner.submitDAG(executionId, dag, settings, data, notifyInfo);
         Optional.ofNullable(getTimeoutSeconds(new HashMap<>(), executionResult.getContext(), dag.getTimeline()))
                 .ifPresent(timeoutSeconds -> timeCheckRunner.addDAGToTimeoutCheck(executionId, timeoutSeconds));
         dagTraversal.submitTraversal(executionId, null);
+        span.end();
     }
 
     public void finishDAG(String executionId, DAGInfo dagInfo, DAGStatus dagStatus, DAGInvokeMsg dagInvokeMsg) {
