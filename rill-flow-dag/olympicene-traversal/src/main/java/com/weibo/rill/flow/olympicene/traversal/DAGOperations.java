@@ -18,6 +18,7 @@ package com.weibo.rill.flow.olympicene.traversal;
 
 import com.google.common.collect.Lists;
 import com.google.common.collect.Maps;
+import com.weibo.rill.flow.common.constant.ReservedConstant;
 import com.weibo.rill.flow.interfaces.model.mapping.Mapping;
 import com.weibo.rill.flow.interfaces.model.strategy.Timeline;
 import com.weibo.rill.flow.interfaces.model.task.*;
@@ -114,7 +115,7 @@ public class DAGOperations {
         params.put("taskInfo", taskInfo);
         params.put("context", context);
 
-        Span span = tracer.spanBuilder("runTask")
+        Span span = tracer.spanBuilder("runTask " + taskInfo.getName())
                 .setAttribute("execution.id", executionId)
                 .setAttribute("task.name", taskInfo.getName())
                 .setAttribute("task.category", taskInfo.getTask().getCategory())
@@ -248,7 +249,9 @@ public class DAGOperations {
     }
 
     public void submitDAG(String executionId, DAG dag, DAGSettings settings, Map<String, Object> data, NotifyInfo notifyInfo) {
-        Span span = tracer.spanBuilder("submitDAG")
+        String[] executionIdInfos = executionId.split(ReservedConstant.EXECUTION_ID_CONNECTOR);
+        String descriptorId = executionIdInfos[0];
+        Span span = tracer.spanBuilder("submitDAG " + descriptorId)
                 .setAttribute("execution.id", executionId)
                 .startSpan();
         log.info("submitDAG task begin to execute executionId:{} notifyInfo:{}", executionId, notifyInfo);
