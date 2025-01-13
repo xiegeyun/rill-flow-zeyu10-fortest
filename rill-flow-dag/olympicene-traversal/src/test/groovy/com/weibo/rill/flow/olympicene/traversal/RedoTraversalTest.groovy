@@ -20,6 +20,7 @@ import com.weibo.rill.flow.olympicene.traversal.checker.DefaultTimeChecker
 import com.weibo.rill.flow.olympicene.traversal.config.OlympiceneFacade
 import com.weibo.rill.flow.olympicene.traversal.dispatcher.DAGDispatcher
 import groovy.util.logging.Slf4j
+import io.opentelemetry.api.trace.Tracer
 import spock.lang.Specification
 
 
@@ -31,7 +32,7 @@ class RedoTraversalTest extends Specification {
     DAGDispatcher dispatcher = Mock(DAGDispatcher.class)
     DAGStorageProcedure dagStorageProcedure = new LocalStorageProcedure()
     SwitcherManager switcherManager = Mock(SwitcherManager.class)
-    Olympicene olympicene = OlympiceneFacade.build(dagStorage, dagStorage, callback, dispatcher, dagStorageProcedure, Mock(DefaultTimeChecker.class), switcherManager)
+    Olympicene olympicene = OlympiceneFacade.build(dagStorage, dagStorage, callback, dispatcher, dagStorageProcedure, Mock(DefaultTimeChecker.class), switcherManager, Mock(Tracer))
     String executionId = "xxx1"
     DAG dag
 

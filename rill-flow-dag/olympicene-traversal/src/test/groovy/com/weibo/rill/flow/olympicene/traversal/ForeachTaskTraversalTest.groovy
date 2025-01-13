@@ -24,6 +24,7 @@ import com.weibo.rill.flow.olympicene.traversal.dispatcher.DAGDispatcher
 import com.weibo.rill.flow.olympicene.traversal.serialize.DAGTraversalSerializer
 import com.weibo.rill.flow.olympicene.traversal.callback.DAGCallbackInfo
 import com.weibo.rill.flow.olympicene.traversal.callback.DAGEvent
+import io.opentelemetry.api.trace.Tracer
 import spock.lang.Specification
 
 class ForeachTaskTraversalTest extends Specification {
@@ -33,7 +34,7 @@ class ForeachTaskTraversalTest extends Specification {
     DAGDispatcher dispatcher = Mock(DAGDispatcher.class)
     DAGStorageProcedure dagStorageProcedure = new LocalStorageProcedure()
     SwitcherManager switcherManager = Mock(SwitcherManager.class)
-    Olympicene olympicene = OlympiceneFacade.build(dagStorage, dagStorage, callback, dispatcher, dagStorageProcedure, Mock(DefaultTimeChecker.class), switcherManager)
+    Olympicene olympicene = OlympiceneFacade.build(dagStorage, dagStorage, callback, dispatcher, dagStorageProcedure, Mock(DefaultTimeChecker.class), switcherManager, Mock(Tracer))
 
     /**
      * A -> B -> C
