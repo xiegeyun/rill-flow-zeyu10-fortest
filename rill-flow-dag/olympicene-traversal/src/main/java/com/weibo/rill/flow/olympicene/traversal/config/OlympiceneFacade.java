@@ -47,10 +47,10 @@ public class OlympiceneFacade {
     public static Olympicene build(DAGInfoStorage dagInfoStorage, DAGContextStorage dagContextStorage,
                                    Callback<DAGCallbackInfo> callback, DAGDispatcher dagDispatcher,
                                    DAGStorageProcedure dagStorageProcedure, TimeChecker timeChecker,
-                                   SwitcherManager switcherManager) {
+                                   SwitcherManager switcherManager, Tracer tracer) {
         ExecutorService executor = SameThreadExecutorService.INSTANCE;
         return build(dagInfoStorage, dagContextStorage, dagStorageProcedure, callback, null,
-                dagDispatcher, timeChecker, executor, switcherManager, null);
+                dagDispatcher, timeChecker, executor, switcherManager, tracer);
     }
 
     public static Olympicene build(DAGInfoStorage dagInfoStorage, DAGContextStorage dagContextStorage, DAGStorageProcedure dagStorageProcedure,

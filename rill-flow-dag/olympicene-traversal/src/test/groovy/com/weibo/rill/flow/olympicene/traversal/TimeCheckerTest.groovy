@@ -25,6 +25,7 @@ import com.weibo.rill.flow.olympicene.traversal.runners.TimeCheckRunner
 import com.weibo.rill.flow.olympicene.traversal.serialize.DAGTraversalSerializer
 import com.weibo.rill.flow.olympicene.traversal.callback.DAGCallbackInfo
 import com.weibo.rill.flow.olympicene.traversal.callback.DAGEvent
+import io.opentelemetry.api.trace.Tracer
 import spock.lang.Specification
 
 
@@ -42,7 +43,7 @@ class TimeCheckerTest extends Specification {
     def setup() {
         timeChecker.redisClient = Mock(RedisClient.class)
         switcherManager.getSwitcherState("ENABLE_SET_INPUT_OUTPUT") >> true
-        olympicene = OlympiceneFacade.build(dagStorage, dagStorage, callback, dispatcher, dagStorageProcedure, timeChecker, switcherManager)
+        olympicene = OlympiceneFacade.build(dagStorage, dagStorage, callback, dispatcher, dagStorageProcedure, timeChecker, switcherManager, Mock(Tracer))
         timeChecker.timeCheckRunner = olympicene.dagOperations.timeCheckRunner
     }
 

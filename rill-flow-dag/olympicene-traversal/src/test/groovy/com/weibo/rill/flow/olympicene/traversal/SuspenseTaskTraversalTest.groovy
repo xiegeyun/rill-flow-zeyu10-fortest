@@ -23,6 +23,7 @@ import com.weibo.rill.flow.olympicene.traversal.dispatcher.DAGDispatcher
 import com.weibo.rill.flow.olympicene.traversal.callback.DAGCallbackInfo
 import com.weibo.rill.flow.olympicene.traversal.callback.DAGEvent
 import com.weibo.rill.flow.olympicene.traversal.checker.DefaultTimeChecker
+import io.opentelemetry.api.trace.Tracer
 import spock.lang.Specification
 
 class SuspenseTaskTraversalTest extends Specification {
@@ -32,7 +33,7 @@ class SuspenseTaskTraversalTest extends Specification {
     DAGDispatcher dispatcher = Mock(DAGDispatcher.class)
     DAGStorageProcedure dagStorageProcedure = new LocalStorageProcedure()
     SwitcherManager switcherManager = Mock(SwitcherManager.class)
-    Olympicene olympicene = OlympiceneFacade.build(dagStorage, dagStorage, callback, dispatcher, dagStorageProcedure, Mock(DefaultTimeChecker.class), switcherManager)
+    Olympicene olympicene = OlympiceneFacade.build(dagStorage, dagStorage, callback, dispatcher, dagStorageProcedure, Mock(DefaultTimeChecker.class), switcherManager, Mock(Tracer))
 
     def "test suspense task"() {
         given:
