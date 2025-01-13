@@ -27,24 +27,27 @@ public class OpenTelemetryConfig {
     @Value("${otel.exporter.otlp.endpoint:http://jaeger:4317}")
     private String endpoint;
 
+    @Value("${otel.traces.sampler.probability:1.0}")
+    private double samplerProbability;
+
     @Bean
     public OpenTelemetry openTelemetry() {
+        log.info("Initializing OpenTelemetry with endpoint: {}, service name: {}", endpoint, serviceName);
+        
         Resource resource = Resource.getDefault()
                 .merge(Resource.create(Attributes.of(
-                        ResourceAttributes.SERVICE_NAME, serviceName
+                        ResourceAttributes.SERVICE_NAME, serviceName,
+                        ResourceAttributes.SERVICE_VERSION, "1.0.0"
                 )));
 
+        OtlpGrpcSpanExporter spanExporter = OtlpGrpcSpanExporter.builder()
+                .setEndpoint(endpoint)
+                .build();
+
         SdkTracerProvider sdkTracerProvider = SdkTracerProvider.builder()
-                // 配置采样器（这里设置全部采样）
-                .setSampler(Sampler.alwaysOn())
-                // 配置 OTLP 导出器
-                .addSpanProcessor(SpanProcessor.composite(
-                        // 批量处理用于性能优化
-                        BatchSpanProcessor.builder(
-                                        OtlpGrpcSpanExporter.builder()
-                                                .setEndpoint(endpoint)
-                                                .build())
-                                .build()))
+                .setSampler(Sampler.traceIdRatioBased(samplerProbability))
+                .addSpanProcessor(BatchSpanProcessor.builder(spanExporter)
+                        .build())
                 .setResource(resource)
                 .build();
 
