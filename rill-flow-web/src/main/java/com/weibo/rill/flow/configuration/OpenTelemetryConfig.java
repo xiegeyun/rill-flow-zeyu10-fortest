@@ -9,7 +9,6 @@ import io.opentelemetry.exporter.otlp.trace.OtlpGrpcSpanExporter;
 import io.opentelemetry.sdk.OpenTelemetrySdk;
 import io.opentelemetry.sdk.resources.Resource;
 import io.opentelemetry.sdk.trace.SdkTracerProvider;
-import io.opentelemetry.sdk.trace.SpanProcessor;
 import io.opentelemetry.sdk.trace.export.BatchSpanProcessor;
 import io.opentelemetry.sdk.trace.samplers.Sampler;
 import io.opentelemetry.semconv.resource.attributes.ResourceAttributes;
@@ -21,7 +20,7 @@ import org.springframework.context.annotation.Configuration;
 @Configuration
 @Slf4j
 public class OpenTelemetryConfig {
-    @Value("${otel.service.name:rill-flow-engine}")
+    @Value("${otel.service.name:rill-flow}")
     private String serviceName;
 
     @Value("${otel.exporter.otlp.endpoint:http://jaeger:4317}")
@@ -59,6 +58,6 @@ public class OpenTelemetryConfig {
 
     @Bean
     public Tracer tracer(OpenTelemetry openTelemetry) {
-        return openTelemetry.getTracer("rill-flow-engine", "1.0.0");
+        return openTelemetry.getTracer("rill-flow", "1.0.0");
     }
 }
