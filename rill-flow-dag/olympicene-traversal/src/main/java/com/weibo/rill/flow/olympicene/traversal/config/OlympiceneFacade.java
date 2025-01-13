@@ -37,6 +37,7 @@ import com.weibo.rill.flow.olympicene.traversal.mappings.InputOutputMapping;
 import com.weibo.rill.flow.olympicene.traversal.mappings.JSONPath;
 import com.weibo.rill.flow.olympicene.traversal.mappings.JSONPathInputOutputMapping;
 import com.weibo.rill.flow.olympicene.traversal.runners.*;
+import io.opentelemetry.api.trace.Tracer;
 
 import java.util.Map;
 import java.util.concurrent.ExecutorService;
@@ -49,12 +50,12 @@ public class OlympiceneFacade {
                                    SwitcherManager switcherManager) {
         ExecutorService executor = SameThreadExecutorService.INSTANCE;
         return build(dagInfoStorage, dagContextStorage, dagStorageProcedure, callback, null,
-                dagDispatcher, timeChecker, executor, switcherManager);
+                dagDispatcher, timeChecker, executor, switcherManager, null);
     }
 
     public static Olympicene build(DAGInfoStorage dagInfoStorage, DAGContextStorage dagContextStorage, DAGStorageProcedure dagStorageProcedure,
                                    Callback<DAGCallbackInfo> callback, DAGResultHandler dagResultHandler, DAGDispatcher dagDispatcher,
-                                   TimeChecker timeChecker, ExecutorService executor, SwitcherManager switcherManager) {
+                                   TimeChecker timeChecker, ExecutorService executor, SwitcherManager switcherManager, Tracer tracer) {
         JSONPathInputOutputMapping jsonPathInputOutputMapping = new JSONPathInputOutputMapping();
 
         DefaultStasher stasher = new DefaultStasher();
@@ -65,7 +66,7 @@ public class OlympiceneFacade {
                 jsonPathInputOutputMapping, jsonPathInputOutputMapping, dagStorageProcedure, stasher, switcherManager);
 
         DAGTraversal dagTraversal = new DAGTraversal(dagContextStorage, dagInfoStorage, dagStorageProcedure, executor);
-        DAGOperations dagOperations = new DAGOperations(executor, taskRunners, dagRunner, timeCheckRunner, dagTraversal, callback, dagResultHandler);
+        DAGOperations dagOperations = new DAGOperations(executor, taskRunners, dagRunner, timeCheckRunner, dagTraversal, callback, dagResultHandler, tracer);
         dagTraversal.setDagOperations(dagOperations);
         dagTraversal.setStasher(stasher);
         timeCheckRunner.setDagOperations(dagOperations);
