@@ -266,7 +266,8 @@ public class DAGDescriptorFacade {
      */
     private void generateResourceProtocol(JSONObject task) {
         try {
-            if (task == null || StringUtils.isNotEmpty(task.getString(RESOURCE_PROTOCOL))) {
+            if (task == null || StringUtils.isNotEmpty(task.getString(RESOURCE_PROTOCOL))
+                    || task.getString("resourceName") == null) {
                 return;
             }
             String resourceName = task.getString("resourceName");
