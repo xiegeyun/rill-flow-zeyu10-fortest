@@ -40,7 +40,6 @@ import com.weibo.rill.flow.olympicene.traversal.dispatcher.DAGDispatcher;
 import com.weibo.rill.flow.olympicene.traversal.helper.*;
 import com.weibo.rill.flow.olympicene.traversal.mappings.JSONPathInputOutputMapping;
 import com.weibo.rill.flow.olympicene.traversal.runners.*;
-import io.opentelemetry.api.trace.Tracer;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
@@ -301,10 +300,10 @@ public class OlympiceneAutoConfiguration {
             @Autowired @Qualifier("timeCheckRunner") TimeCheckRunner timeCheckRunner,
             @Autowired @Qualifier("runnerExecutor") ExecutorService runnerExecutor,
             @Autowired(required = false) @Qualifier("dagResultHandler") DAGResultHandler dagResultHandler,
-            @Autowired @Qualifier("tracer") Tracer tracer) {
+            @Autowired @Qualifier("tracerHelper") TracerHelper tracerHelper) {
         log.info("begin to init default DAGOperations bean");
         DAGOperations dagOperations = new DAGOperations(runnerExecutor, taskRunners, dagRunner,
-                timeCheckRunner, dagTraversal, dagCallback, dagResultHandler, tracer);
+                timeCheckRunner, dagTraversal, dagCallback, dagResultHandler, tracerHelper);
         dagTraversal.setDagOperations(dagOperations);
         timeCheckRunner.setDagOperations(dagOperations);
         return dagOperations;
