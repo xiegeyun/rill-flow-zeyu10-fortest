@@ -31,6 +31,7 @@ import com.weibo.rill.flow.olympicene.storage.save.impl.RedisStorageProcedure;
 import com.weibo.rill.flow.olympicene.traversal.callback.DAGCallbackInfo;
 import com.weibo.rill.flow.olympicene.traversal.dispatcher.DAGDispatcher;
 import com.weibo.rill.flow.olympicene.traversal.helper.SameThreadExecutorService;
+import com.weibo.rill.flow.olympicene.traversal.helper.TracerHelper;
 import com.weibo.rill.flow.olympicene.traversal.mappings.JSONPathInputOutputMapping;
 import com.weibo.rill.flow.service.component.OlympiceneCallback;
 import com.weibo.rill.flow.service.component.RuntimeExecutorServiceProxy;
@@ -47,6 +48,7 @@ import com.weibo.rill.flow.service.storage.LongTermStorage;
 import com.weibo.rill.flow.service.storage.RuntimeRedisClients;
 import com.weibo.rill.flow.service.storage.RuntimeStorage;
 import com.weibo.rill.flow.service.util.IpUtils;
+import io.opentelemetry.api.trace.Tracer;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.autoconfigure.AutoConfigureOrder;
@@ -120,6 +122,13 @@ public class OlympiceneConfiguration {
     public BusinessTimeChecker timeChecker(
             @Autowired @Qualifier("runtimeRedisClients") RedisClient redisClient) {
         return new BusinessTimeChecker(redisClient);
+    }
+
+    @Bean
+    public TracerHelper tracerHelper(
+            @Autowired @Qualifier("runtimeRedisClients") RedisClient redisClient,
+            @Autowired Tracer tracer) {
+        return new TracerHelper(redisClient, tracer);
     }
 
 
