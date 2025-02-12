@@ -153,6 +153,8 @@ public class DAGOperations {
                 Timeline timeline = Optional.ofNullable(taskInfo.getTask()).map(BaseTask::getTimeline).orElse(null);
                 Optional.ofNullable(getTimeoutSeconds(executionResult.getInput(), new HashMap<>(), timeline))
                         .ifPresent(timeoutSeconds -> timeCheckRunner.addTaskToTimeoutCheck(executionId, taskInfo, timeoutSeconds));
+                tracerHelper.saveSpanContext(executionId, taskInfo.getName(), span.getSpanContext().getTraceId(), span.getSpanContext().getSpanId());
+                return;
             }
             // 对应1.3
             if (executionResult.getTaskStatus() == TaskStatus.READY && executionResult.isNeedRetry()) {
@@ -168,13 +170,8 @@ public class DAGOperations {
                         });
             }
         } finally {
-            if (executionResultStatus != null) {
-                span.setAttribute("status", executionResultStatus.toString());
-                if (executionResultStatus.isCompleted()) {
-                    span.end();
-                } else {
-                    tracerHelper.saveSpanContext(executionId, taskInfo.getName(), span.getSpanContext().getTraceId(), span.getSpanContext().getSpanId());
-                }
+            if (executionResultStatus != null && executionResultStatus.isCompleted()) {
+                span.end();
             }
         }
     }
@@ -236,8 +233,11 @@ public class DAGOperations {
         SpanContext spanContext = tracerHelper.loadSpanContext(executionId, executionResult.getTaskInfo().getName());
         Span span = null;
         if (spanContext != null) {
-            span = tracerHelper.getTracer().spanBuilder("async_task_completion")
+            span = tracerHelper.getTracer().spanBuilder("runTask " + executionResult.getTaskInfo().getName())
                     .setParent(Context.current().with(Span.wrap(spanContext)))
+                    .setAttribute("execution.id", executionId)
+                    .setAttribute("task.name", executionResult.getTaskInfo().getName())
+                    .setAttribute("task.category", taskCategory)
                     .setSpanKind(SpanKind.SERVER)
                     .startSpan();
         }

@@ -68,4 +68,13 @@ public class TracerHelper {
             return null;
         }
     }
+
+    public void removeSpanContext(String executionId, String taskId) {
+        try {
+            String key = TRACE_KEY_PREFIX + executionId + "_" + taskId;
+            redisClient.del(key);
+        } catch (Exception e) {
+            log.error("Failed to remove span context from Redis for task: {}", taskId, e);
+        }
+    }
 }
