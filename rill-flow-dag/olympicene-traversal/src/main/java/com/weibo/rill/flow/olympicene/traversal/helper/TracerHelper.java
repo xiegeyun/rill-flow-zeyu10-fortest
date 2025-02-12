@@ -40,8 +40,11 @@ public class TracerHelper {
             String key = TRACE_KEY_PREFIX + executionId + "_" + taskId;
             JSONObject contextInfo = new JSONObject();
             SpanContext spanContext = currentSpan.getSpanContext();
+            SpanContext parentSpanContext = Span.fromContext(parentContext).getSpanContext();
+            
             contextInfo.put("traceId", spanContext.getTraceId());
             contextInfo.put("spanId", spanContext.getSpanId());
+            contextInfo.put("parentSpanId", parentSpanContext.getSpanId());
             contextInfo.put("traceFlags", spanContext.getTraceFlags().asHex());
             contextInfo.put("timestamp", String.valueOf(System.currentTimeMillis()));
 
@@ -64,16 +67,22 @@ public class TracerHelper {
             JSONObject contextInfo = JSONObject.parseObject(contextInfoString);
             String traceId = contextInfo.getString("traceId");
             String spanId = contextInfo.getString("spanId");
+            String parentSpanId = contextInfo.getString("parentSpanId");
             String traceFlags = contextInfo.getString("traceFlags");
 
-            SpanContext spanContext = SpanContext.createFromRemoteParent(
+            // 创建父 span context
+            SpanContext parentContext = SpanContext.create(
                     traceId,
-                    spanId,
+                    parentSpanId,
                     TraceFlags.fromHex(traceFlags, 0),
                     TraceState.getDefault()
             );
 
-            return Span.wrap(spanContext);
+            // 使用父 context 创建新的 span，并保持原始的 spanId
+            return tracer.spanBuilder("runTask " + taskId)
+                    .setParent(Context.current().with(Span.wrap(parentContext)))
+                    .setAttribute("original.span.id", spanId)  // 保存原始 spanId 作为属性
+                    .startSpan();
         } catch (Exception e) {
             log.error("Failed to load span from Redis for task: {}", taskId, e);
             return null;
