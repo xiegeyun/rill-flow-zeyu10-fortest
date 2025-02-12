@@ -118,10 +118,14 @@ public class DAGOperations {
         params.put("taskInfo", taskInfo);
         params.put("context", context);
 
+        // 获取当前的 Context
+        Context currentContext = Context.current();
+        
         Span span = tracerHelper.getTracer().spanBuilder("runTask " + taskInfo.getName())
                 .setAttribute("execution.id", executionId)
                 .setAttribute("task.name", taskInfo.getName())
                 .setAttribute("task.category", taskInfo.getTask().getCategory())
+                .setParent(currentContext)  // 显式设置父 context
                 .startSpan();
 
         TaskStatus executionResultStatus = null;
@@ -153,7 +157,8 @@ public class DAGOperations {
                 Timeline timeline = Optional.ofNullable(taskInfo.getTask()).map(BaseTask::getTimeline).orElse(null);
                 Optional.ofNullable(getTimeoutSeconds(executionResult.getInput(), new HashMap<>(), timeline))
                         .ifPresent(timeoutSeconds -> timeCheckRunner.addTaskToTimeoutCheck(executionId, taskInfo, timeoutSeconds));
-                tracerHelper.saveSpanContext(executionId, taskInfo.getName(), span.getSpanContext().getTraceId(), span.getSpanContext().getSpanId());
+                // 保存完整的 Context，而不仅仅是 SpanContext
+                tracerHelper.saveContext(executionId, taskInfo.getName(), currentContext, span);
                 return;
             }
             // 对应1.3
@@ -171,6 +176,7 @@ public class DAGOperations {
             }
         } finally {
             if (executionResultStatus != null && executionResultStatus.isCompleted()) {
+                span.setAttribute("status", executionResultStatus.toString());
                 span.end();
             }
         }
@@ -230,18 +236,19 @@ public class DAGOperations {
         Supplier<ExecutionResult> supplier = PluginHelper.pluginInvokeChain(basicActions, params, SystemConfig.TASK_FINISH_CUSTOMIZED_PLUGINS);
         ExecutionResult executionResult = supplier.get();
 
-        SpanContext spanContext = tracerHelper.loadSpanContext(executionId, executionResult.getTaskInfo().getName());
+        Context savedContext = tracerHelper.loadContext(executionId, executionResult.getTaskInfo().getName());
         Span span = null;
-        if (spanContext != null) {
+        if (savedContext != null) {
             span = tracerHelper.getTracer().spanBuilder("runTask " + executionResult.getTaskInfo().getName())
-                    .setParent(Context.current().with(Span.wrap(spanContext)))
+                    .setParent(savedContext)  // 使用保存的完整 Context
                     .setAttribute("execution.id", executionId)
                     .setAttribute("task.name", executionResult.getTaskInfo().getName())
                     .setAttribute("task.category", taskCategory)
                     .setSpanKind(SpanKind.SERVER)
                     .startSpan();
         }
-        try {
+        
+        try (Scope scope = span != null ? span.makeCurrent() : null) {
             if (executionResult.getTaskStatus() == TaskStatus.READY && executionResult.isNeedRetry()) {
                 timeCheckRunner.remTaskFromTimeoutCheck(executionId, executionResult.getTaskInfo());
                 runTaskWithTimeInterval(executionId, executionResult.getTaskInfo(),
