@@ -46,7 +46,7 @@ public class TracerHelper {
             contextInfo.put("spanId", spanContext.getSpanId());
             contextInfo.put("parentSpanId", parentSpanContext.getSpanId());
             contextInfo.put("traceFlags", spanContext.getTraceFlags().asHex());
-            contextInfo.put("timestamp", String.valueOf(System.currentTimeMillis()));
+            contextInfo.put("startTime", System.currentTimeMillis());  // 保存开始时间
 
             redisClient.set(key, contextInfo.toJSONString());
             redisClient.expire(key, TRACE_EXPIRE_SECONDS);
@@ -69,8 +69,8 @@ public class TracerHelper {
             String spanId = contextInfo.getString("spanId");
             String parentSpanId = contextInfo.getString("parentSpanId");
             String traceFlags = contextInfo.getString("traceFlags");
+            long startTime = Long.parseLong(contextInfo.getString("startTime"));
 
-            // 创建父 span context
             SpanContext parentContext = SpanContext.create(
                     traceId,
                     parentSpanId,
@@ -78,10 +78,10 @@ public class TracerHelper {
                     TraceState.getDefault()
             );
 
-            // 使用父 context 创建新的 span，并保持原始的 spanId
             return tracer.spanBuilder("runTask " + taskId)
                     .setParent(Context.current().with(Span.wrap(parentContext)))
-                    .setAttribute("original.span.id", spanId)  // 保存原始 spanId 作为属性
+                    .setAttribute("original.span.id", spanId)
+                    .setStartTimestamp(startTime, java.util.concurrent.TimeUnit.MILLISECONDS)  // 设置正确的开始时间
                     .startSpan();
         } catch (Exception e) {
             log.error("Failed to load span from Redis for task: {}", taskId, e);
