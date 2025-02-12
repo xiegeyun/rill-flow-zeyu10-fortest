@@ -118,14 +118,11 @@ public class DAGOperations {
         params.put("taskInfo", taskInfo);
         params.put("context", context);
 
-        // 获取当前的 Context
-        Context currentContext = Context.current();
-        
         Span span = tracerHelper.getTracer().spanBuilder("runTask " + taskInfo.getName())
                 .setAttribute("execution.id", executionId)
                 .setAttribute("task.name", taskInfo.getName())
                 .setAttribute("task.category", taskInfo.getTask().getCategory())
-                .setParent(currentContext)  // 显式设置父 context
+                .setParent(Context.current())
                 .startSpan();
 
         TaskStatus executionResultStatus = null;
@@ -157,8 +154,7 @@ public class DAGOperations {
                 Timeline timeline = Optional.ofNullable(taskInfo.getTask()).map(BaseTask::getTimeline).orElse(null);
                 Optional.ofNullable(getTimeoutSeconds(executionResult.getInput(), new HashMap<>(), timeline))
                         .ifPresent(timeoutSeconds -> timeCheckRunner.addTaskToTimeoutCheck(executionId, taskInfo, timeoutSeconds));
-                // 保存完整的 Context，而不仅仅是 SpanContext
-                tracerHelper.saveContext(executionId, taskInfo.getName(), currentContext, span);
+                tracerHelper.saveContext(executionId, taskInfo.getName(), Context.current(), span);
                 return;
             }
             // 对应1.3
@@ -176,7 +172,6 @@ public class DAGOperations {
             }
         } finally {
             if (executionResultStatus != null && executionResultStatus.isCompleted()) {
-                span.setAttribute("status", executionResultStatus.toString());
                 span.end();
             }
         }
@@ -236,17 +231,8 @@ public class DAGOperations {
         Supplier<ExecutionResult> supplier = PluginHelper.pluginInvokeChain(basicActions, params, SystemConfig.TASK_FINISH_CUSTOMIZED_PLUGINS);
         ExecutionResult executionResult = supplier.get();
 
-        Context savedContext = tracerHelper.loadContext(executionId, executionResult.getTaskInfo().getName());
-        Span span = null;
-        if (savedContext != null) {
-            span = tracerHelper.getTracer().spanBuilder("runTask " + executionResult.getTaskInfo().getName())
-                    .setParent(savedContext)  // 使用保存的完整 Context
-                    .setAttribute("execution.id", executionId)
-                    .setAttribute("task.name", executionResult.getTaskInfo().getName())
-                    .setAttribute("task.category", taskCategory)
-                    .setSpanKind(SpanKind.SERVER)
-                    .startSpan();
-        }
+        // 尝试恢复之前的 span
+        Span span = tracerHelper.loadSpan(executionId, executionResult.getTaskInfo().getName());
         
         try (Scope scope = span != null ? span.makeCurrent() : null) {
             if (executionResult.getTaskStatus() == TaskStatus.READY && executionResult.isNeedRetry()) {
@@ -271,7 +257,7 @@ public class DAGOperations {
         } finally {
             if (span != null && executionResult.getTaskStatus().isCompleted()) {
                 span.setAttribute("status", executionResult.getTaskStatus().toString());
-                span.end();
+                span.end();  // 结束之前保存的 span
             }
         }
     }

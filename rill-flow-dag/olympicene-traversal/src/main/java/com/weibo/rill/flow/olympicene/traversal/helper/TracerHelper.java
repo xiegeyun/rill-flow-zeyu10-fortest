@@ -39,11 +39,10 @@ public class TracerHelper {
         try {
             String key = TRACE_KEY_PREFIX + executionId + "_" + taskId;
             JSONObject contextInfo = new JSONObject();
-            contextInfo.put("traceId", currentSpan.getSpanContext().getTraceId());
-            contextInfo.put("spanId", currentSpan.getSpanContext().getSpanId());
-            // 获取当前 span 的父 spanId
-            Span parentSpan = Span.fromContext(parentContext);
-            contextInfo.put("parentSpanId", parentSpan.getSpanContext().getSpanId());
+            SpanContext spanContext = currentSpan.getSpanContext();
+            contextInfo.put("traceId", spanContext.getTraceId());
+            contextInfo.put("spanId", spanContext.getSpanId());
+            contextInfo.put("traceFlags", spanContext.getTraceFlags().asHex());
             contextInfo.put("timestamp", String.valueOf(System.currentTimeMillis()));
 
             redisClient.set(key, contextInfo.toJSONString());
@@ -53,7 +52,7 @@ public class TracerHelper {
         }
     }
 
-    public Context loadContext(String executionId, String taskId) {
+    public Span loadSpan(String executionId, String taskId) {
         try {
             String key = TRACE_KEY_PREFIX + executionId + "_" + taskId;
             String contextInfoString = redisClient.get(key);
@@ -65,30 +64,18 @@ public class TracerHelper {
             JSONObject contextInfo = JSONObject.parseObject(contextInfoString);
             String traceId = contextInfo.getString("traceId");
             String spanId = contextInfo.getString("spanId");
-            String parentSpanId = contextInfo.getString("parentSpanId");
+            String traceFlags = contextInfo.getString("traceFlags");
 
-            // 创建父 SpanContext
-            SpanContext parentSpanContext = SpanContext.create(
-                    traceId,
-                    parentSpanId,
-                    TraceFlags.getSampled(),
-                    TraceState.getDefault()
-            );
-
-            // 创建当前 SpanContext
-            SpanContext currentSpanContext = SpanContext.create(
+            SpanContext spanContext = SpanContext.createFromRemoteParent(
                     traceId,
                     spanId,
-                    TraceFlags.getSampled(),
+                    TraceFlags.fromHex(traceFlags, 0),
                     TraceState.getDefault()
             );
 
-            // 先设置父 context，再包装当前 span
-            return Context.current()
-                    .with(Span.wrap(parentSpanContext))
-                    .with(Span.wrap(currentSpanContext));
+            return Span.wrap(spanContext);
         } catch (Exception e) {
-            log.error("Failed to load context from Redis for task: {}", taskId, e);
+            log.error("Failed to load span from Redis for task: {}", taskId, e);
             return null;
         } finally {
             removeSpanContext(executionId, taskId);
