@@ -301,6 +301,7 @@ public class DAGOperations {
         Span dagSpan = tracerHelper.getTracer().spanBuilder("submitDAG " + descriptorId)
                 .setAttribute("execution.id", executionId)
                 .setAttribute("dag.name", dag.getDagName())
+                .setParent(Context.current())  // 显式设置父 context
                 .startSpan();
         
         Context dagContext = Context.current().with(dagSpan);
@@ -313,6 +314,9 @@ public class DAGOperations {
             Optional.ofNullable(getTimeoutSeconds(new HashMap<>(), executionResult.getContext(), dag.getTimeline()))
                     .ifPresent(timeoutSeconds -> timeCheckRunner.addDAGToTimeoutCheck(executionId, timeoutSeconds));
             dagTraversal.submitTraversal(executionId, null);
+        } finally {
+            // 不要在这里结束 span，让它持续到整个流程结束
+            // dagSpan.end();
         }
     }
 
@@ -356,6 +360,7 @@ public class DAGOperations {
                 
                 // 在 DAG 完成时结束 span
                 dagSpan.setAttribute("status", dagStatus.name());
+                dagSpan.setAttribute("duration_ms", System.currentTimeMillis() - startTime);  // 添加持续时间
                 dagSpan.end();
             }
         } else {
