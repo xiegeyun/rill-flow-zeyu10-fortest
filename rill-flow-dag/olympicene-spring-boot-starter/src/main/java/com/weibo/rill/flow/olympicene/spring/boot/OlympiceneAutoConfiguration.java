@@ -146,9 +146,10 @@ public class OlympiceneAutoConfiguration {
             @Autowired @Qualifier("dagContextStorage") DAGContextStorage dagContextStorage,
             @Autowired @Qualifier("dagInfoStorage") DAGInfoStorage dagInfoStorage,
             @Autowired @Qualifier("dagStorageProcedure") DAGStorageProcedure dagStorageProcedure,
-            @Autowired @Qualifier("traversalExecutor") ExecutorService traversalExecutor) {
+            @Autowired @Qualifier("traversalExecutor") ExecutorService traversalExecutor,
+            @Autowired TracerHelper tracerHelper) {
         log.info("begin to init default DAGTraversal bean");
-        DAGTraversal dagTraversal = new DAGTraversal(dagContextStorage, dagInfoStorage, dagStorageProcedure, traversalExecutor);
+        DAGTraversal dagTraversal = new DAGTraversal(dagContextStorage, dagInfoStorage, dagStorageProcedure, traversalExecutor, tracerHelper);
         dagTraversal.setStasher(stasher);
         return dagTraversal;
     }

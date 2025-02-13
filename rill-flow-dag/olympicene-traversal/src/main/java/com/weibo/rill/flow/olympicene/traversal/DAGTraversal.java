@@ -53,9 +53,7 @@ import java.util.stream.Collectors;
 @Slf4j
 public class DAGTraversal {
     private final ContextHelper contextHelper = ContextHelper.getInstance();
-    @Setter
-    private TracerHelper tracerHelper;
-
+    private final TracerHelper tracerHelper;
     private final DAGContextStorage dagContextStorage;
     private final DAGInfoStorage dagInfoStorage;
     private final DAGStorageProcedure dagStorageProcedure;
@@ -66,11 +64,12 @@ public class DAGTraversal {
     private Stasher stasher;
 
     public DAGTraversal(DAGContextStorage dagStorage, DAGInfoStorage dagInfoStorage, DAGStorageProcedure dagStorageProcedure,
-                        ExecutorService traversalExecutor) {
+                        ExecutorService traversalExecutor, TracerHelper tracerHelper) {
         this.dagContextStorage = dagStorage;
         this.dagInfoStorage = dagInfoStorage;
         this.dagStorageProcedure = dagStorageProcedure;
         this.traversalExecutor = traversalExecutor;
+        this.tracerHelper = tracerHelper;
     }
 
     public void submitTraversal(String executionId, String completedTaskName) {
