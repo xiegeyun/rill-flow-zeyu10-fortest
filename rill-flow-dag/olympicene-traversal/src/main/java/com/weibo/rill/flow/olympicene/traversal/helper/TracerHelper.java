@@ -125,14 +125,14 @@ public class TracerHelper {
             String traceFlags = contextInfo.getString("traceFlags");
             long startTime = Long.parseLong(contextInfo.getString("startTime"));
 
-            SpanContext spanContext = SpanContext.create(
-                    traceId,
-                    spanId,
-                    TraceFlags.fromHex(traceFlags, 0),
-                    TraceState.getDefault()
-            );
+            // 重新创建 DAG span 而不是只包装 SpanContext
+            Span dagSpan = tracer.spanBuilder("submitDAG")
+                    .setParent(Context.current())
+                    .setSpanId(spanId)  // 使用保存的 spanId
+                    .setStartTimestamp(startTime, java.util.concurrent.TimeUnit.MILLISECONDS)
+                    .startSpan();
 
-            return Context.current().with(Span.wrap(spanContext));
+            return Context.current().with(dagSpan);
         } catch (Exception e) {
             log.error("Failed to load execution context from Redis for execution: {}", executionId, e);
             return null;
