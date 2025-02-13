@@ -18,6 +18,8 @@ package com.weibo.rill.flow.olympicene.traversal;
 
 import com.google.common.base.Joiner;
 import com.google.common.collect.Maps;
+import com.weibo.rill.flow.interfaces.model.task.TaskInfo;
+import com.weibo.rill.flow.interfaces.model.task.TaskStatus;
 import com.weibo.rill.flow.olympicene.core.concurrent.ExecutionRunnable;
 import com.weibo.rill.flow.olympicene.core.constant.SystemConfig;
 import com.weibo.rill.flow.olympicene.core.helper.DAGWalkHelper;
@@ -26,14 +28,15 @@ import com.weibo.rill.flow.olympicene.core.model.NotifyInfo;
 import com.weibo.rill.flow.olympicene.core.model.dag.DAGInfo;
 import com.weibo.rill.flow.olympicene.core.model.dag.DAGStatus;
 import com.weibo.rill.flow.olympicene.core.model.task.ForeachTask;
-import com.weibo.rill.flow.interfaces.model.task.TaskInfo;
-import com.weibo.rill.flow.interfaces.model.task.TaskStatus;
 import com.weibo.rill.flow.olympicene.core.runtime.DAGContextStorage;
 import com.weibo.rill.flow.olympicene.core.runtime.DAGInfoStorage;
 import com.weibo.rill.flow.olympicene.core.runtime.DAGStorageProcedure;
 import com.weibo.rill.flow.olympicene.traversal.helper.ContextHelper;
 import com.weibo.rill.flow.olympicene.traversal.helper.PluginHelper;
 import com.weibo.rill.flow.olympicene.traversal.helper.Stasher;
+import com.weibo.rill.flow.olympicene.traversal.helper.TracerHelper;
+import io.opentelemetry.context.Context;
+import io.opentelemetry.context.Scope;
 import lombok.Setter;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.collections.CollectionUtils;
@@ -50,6 +53,8 @@ import java.util.stream.Collectors;
 @Slf4j
 public class DAGTraversal {
     private final ContextHelper contextHelper = ContextHelper.getInstance();
+    @Setter
+    private TracerHelper tracerHelper;
 
     private final DAGContextStorage dagContextStorage;
     private final DAGInfoStorage dagInfoStorage;
@@ -69,18 +74,26 @@ public class DAGTraversal {
     }
 
     public void submitTraversal(String executionId, String completedTaskName) {
+        // 获取 execution context
+        Context executionContext = tracerHelper.loadExecutionContext(executionId);
+        if (executionContext == null) {
+            executionContext = Context.current();
+        }
+        Context finalContext = executionContext;  // 为了在 lambda 中使用
+
         traversalExecutor.execute(new ExecutionRunnable(executionId,() -> {
             try {
                 log.info("submitTraversal begin lock executionId:{}, completedTaskName:{}", executionId, completedTaskName);
+                try (Scope ignored = finalContext.makeCurrent()) {  // 在新线程中恢复 context
+                    Map<String, Object> params = Maps.newHashMap();
+                    params.put("executionId", executionId);
+                    params.put("completedTaskName", completedTaskName);
 
-                Map<String, Object> params = Maps.newHashMap();
-                params.put("executionId", executionId);
-                params.put("completedTaskName", completedTaskName);
-
-                Runnable basicActions = () -> dagStorageProcedure.lockAndRun(
-                        LockerKey.buildDagInfoLockName(executionId), () -> doTraversal(executionId, completedTaskName));
-                Runnable runnable = PluginHelper.pluginInvokeChain(basicActions, params, SystemConfig.TRAVERSAL_CUSTOMIZED_PLUGINS);
-                DAGOperations.OPERATE_WITH_RETRY.accept(runnable, SystemConfig.getTraversalRetryTimes());
+                    Runnable basicActions = () -> dagStorageProcedure.lockAndRun(
+                            LockerKey.buildDagInfoLockName(executionId), () -> doTraversal(executionId, completedTaskName));
+                    Runnable runnable = PluginHelper.pluginInvokeChain(basicActions, params, SystemConfig.TRAVERSAL_CUSTOMIZED_PLUGINS);
+                    DAGOperations.OPERATE_WITH_RETRY.accept(runnable, SystemConfig.getTraversalRetryTimes());
+                }
             } catch (Exception e) {
                 log.error("executionId:{} traversal exception with completedTaskName:{}. ", executionId, completedTaskName, e);
             }
@@ -88,18 +101,27 @@ public class DAGTraversal {
     }
 
     public void submitTasks(String executionId, Set<TaskInfo> taskInfos, Map<String, Object> groupedContext) {
+        // 获取 execution context
+        Context executionContext = tracerHelper.loadExecutionContext(executionId);
+        if (executionContext == null) {
+            executionContext = Context.current();
+        }
+        Context finalContext = executionContext;
+
         traversalExecutor.execute(new ExecutionRunnable(executionId, () -> {
             try {
                 log.info("submitTasks begin get lock executionId:{}", executionId);
-                Runnable runnable = () -> dagStorageProcedure.lockAndRun(LockerKey.buildDagInfoLockName(executionId), () -> {
-                    log.info("submitTasks begin execute task executionId:{}", executionId);
-                    Set<TaskInfo> readyToRunTasks = DAGWalkHelper.getInstance().getReadyToRunTasks(taskInfos);
-                    if (CollectionUtils.isNotEmpty(readyToRunTasks)) {
-                        List<Pair<TaskInfo, Map<String, Object>>> taskToContexts = contextHelper.getContext(readyToRunTasks, groupedContext);
-                        runTasks(executionId, taskToContexts);
-                    }
-                });
-                DAGOperations.OPERATE_WITH_RETRY.accept(runnable, SystemConfig.getTraversalRetryTimes());
+                try (Scope ignored = finalContext.makeCurrent()) {  // 在新线程中恢复 context
+                    Runnable runnable = () -> dagStorageProcedure.lockAndRun(LockerKey.buildDagInfoLockName(executionId), () -> {
+                        log.info("submitTasks begin execute task executionId:{}", executionId);
+                        Set<TaskInfo> readyToRunTasks = DAGWalkHelper.getInstance().getReadyToRunTasks(taskInfos);
+                        if (CollectionUtils.isNotEmpty(readyToRunTasks)) {
+                            List<Pair<TaskInfo, Map<String, Object>>> taskToContexts = contextHelper.getContext(readyToRunTasks, groupedContext);
+                            runTasks(executionId, taskToContexts);
+                        }
+                    });
+                    DAGOperations.OPERATE_WITH_RETRY.accept(runnable, SystemConfig.getTraversalRetryTimes());
+                }
             } catch (Exception e) {
                 log.error("dag {} traversal exception with tasks {}. ", executionId, Joiner.on(",").join(taskInfos.stream().map(TaskInfo::getName).collect(Collectors.toList())), e);
             }
