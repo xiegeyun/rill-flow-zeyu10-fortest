@@ -98,11 +98,15 @@ public class DAGOperations {
 
     public void runTasks(String executionId, Collection<Pair<TaskInfo, Map<String, Object>>> taskInfoToContexts) {
         log.info("runTasks begin submit task executionId:{}", executionId);
+        Context parentContext = Context.current();  // 捕获当前的 context
+        
         taskInfoToContexts.forEach(taskInfoToContext -> runnerExecutor.execute(new ExecutionRunnable(executionId, () -> {
             TaskInfo taskInfo = taskInfoToContext.getLeft();
             try {
                 log.info("runTasks task begin to execute executionId:{} taskInfoName:{}", executionId, taskInfo.getName());
-                runTask(executionId, taskInfo, taskInfoToContext.getRight());
+                try (Scope ignored = parentContext.makeCurrent()) {  // 在新线程中恢复 context
+                    runTask(executionId, taskInfo, taskInfoToContext.getRight());
+                }
             } catch (Exception e) {
                 log.error("runTasks fails, executionId:{}, taskName:{}", executionId, taskInfo.getName(), e);
             }
@@ -111,27 +115,25 @@ public class DAGOperations {
 
 
     private void runTask(String executionId, TaskInfo taskInfo, Map<String, Object> context) {
-        Map<String, Object> params = Maps.newHashMap();
-        params.put(EXECUTION_ID, executionId);
-        params.put("taskInfo", taskInfo);
-        params.put("context", context);
-
-        // 获取当前的 Context，这应该包含了从异步任务传递过来的 context
-        Context parentContext = Context.current();
+        // 恢复 execution context
+        Context executionContext = tracerHelper.loadExecutionContext(executionId);
+        if (executionContext == null) {
+            executionContext = Context.current();
+        }
         
         Span span = tracerHelper.getTracer().spanBuilder("runTask " + taskInfo.getName())
                 .setAttribute("execution.id", executionId)
                 .setAttribute("task.name", taskInfo.getName())
                 .setAttribute("task.category", taskInfo.getTask().getCategory())
-                .setParent(parentContext)  // 显式设置父 context
+                .setParent(executionContext)
                 .startSpan();
 
         TaskStatus executionResultStatus = null;
-        try (Scope scope = Context.current().with(span).makeCurrent()) {
+        try (Scope ignored = executionContext.makeCurrent()) {
             TaskRunner runner = selectRunner(taskInfo);
             Supplier<ExecutionResult> basicActions = () -> runner.run(executionId, taskInfo, context);
 
-            Supplier<ExecutionResult> supplier = PluginHelper.pluginInvokeChain(basicActions, params, SystemConfig.TASK_RUN_CUSTOMIZED_PLUGINS);
+            Supplier<ExecutionResult> supplier = PluginHelper.pluginInvokeChain(basicActions, Maps.newHashMap(), SystemConfig.TASK_RUN_CUSTOMIZED_PLUGINS);
             ExecutionResult executionResult = supplier.get();
 
             /*
@@ -147,7 +149,7 @@ public class DAGOperations {
             if (isTaskCompleted(executionResult)) {
                 Context currentContext = Context.current();
                 runnerExecutor.execute(new ExecutionRunnable(executionId, () -> {
-                    try (Scope ignored = currentContext.makeCurrent()) {
+                    try (Scope ignore = currentContext.makeCurrent()) {
                         dagTraversal.submitTraversal(executionId, taskInfo.getName());
                         invokeTaskCallback(executionId, taskInfo, context);
                     }
@@ -159,7 +161,7 @@ public class DAGOperations {
                 Timeline timeline = Optional.ofNullable(taskInfo.getTask()).map(BaseTask::getTimeline).orElse(null);
                 Optional.ofNullable(getTimeoutSeconds(executionResult.getInput(), new HashMap<>(), timeline))
                         .ifPresent(timeoutSeconds -> timeCheckRunner.addTaskToTimeoutCheck(executionId, taskInfo, timeoutSeconds));
-                tracerHelper.saveContext(executionId, taskInfo.getName(), parentContext, span);
+                tracerHelper.saveContext(executionId, taskInfo.getName(), executionContext, span);
                 return;
             }
             // 对应1.3
@@ -294,15 +296,23 @@ public class DAGOperations {
     public void submitDAG(String executionId, DAG dag, DAGSettings settings, Map<String, Object> data, NotifyInfo notifyInfo) {
         String[] executionIdInfos = executionId.split(ReservedConstant.EXECUTION_ID_CONNECTOR);
         String descriptorId = executionIdInfos[0];
-        Span span = tracerHelper.getTracer().spanBuilder("submitDAG " + descriptorId)
+        
+        // 创建 flow 的根 span
+        Span flowSpan = tracerHelper.getTracer().spanBuilder("flow " + descriptorId)
                 .setAttribute("execution.id", executionId)
                 .startSpan();
-        log.info("submitDAG task begin to execute executionId:{} notifyInfo:{}", executionId, notifyInfo);
-        ExecutionResult executionResult = dagRunner.submitDAG(executionId, dag, settings, data, notifyInfo);
-        Optional.ofNullable(getTimeoutSeconds(new HashMap<>(), executionResult.getContext(), dag.getTimeline()))
-                .ifPresent(timeoutSeconds -> timeCheckRunner.addDAGToTimeoutCheck(executionId, timeoutSeconds));
-        dagTraversal.submitTraversal(executionId, null);
-        span.end();
+        
+        Context flowContext = Context.current().with(flowSpan);
+        try (Scope ignored = flowContext.makeCurrent()) {
+            // 保存 execution context
+            tracerHelper.saveExecutionContext(executionId, flowContext);
+            
+            log.info("submitDAG task begin to execute executionId:{} notifyInfo:{}", executionId, notifyInfo);
+            ExecutionResult executionResult = dagRunner.submitDAG(executionId, dag, settings, data, notifyInfo);
+            Optional.ofNullable(getTimeoutSeconds(new HashMap<>(), executionResult.getContext(), dag.getTimeline()))
+                    .ifPresent(timeoutSeconds -> timeCheckRunner.addDAGToTimeoutCheck(executionId, timeoutSeconds));
+            dagTraversal.submitTraversal(executionId, null);
+        }
     }
 
     public void finishDAG(String executionId, DAGInfo dagInfo, DAGStatus dagStatus, DAGInvokeMsg dagInvokeMsg) {

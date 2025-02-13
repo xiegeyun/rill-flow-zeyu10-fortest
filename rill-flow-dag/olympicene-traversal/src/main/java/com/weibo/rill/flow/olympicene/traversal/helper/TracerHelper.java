@@ -25,6 +25,7 @@ public class TracerHelper {
     private static final String TRACE_KEY_PREFIX = "rill_flow_trace_";
     // 设置合适的过期时间（例如24小时）
     private static final int TRACE_EXPIRE_SECONDS = 2 * 60 * 60;
+    private static final String EXECUTION_TRACE_KEY_PREFIX = "rill_flow_execution_trace_";
 
     public void removeSpanContext(String executionId, String taskId) {
         try {
@@ -88,6 +89,50 @@ public class TracerHelper {
             return null;
         } finally {
             removeSpanContext(executionId, taskId);
+        }
+    }
+
+    public void saveExecutionContext(String executionId, Context context) {
+        try {
+            String key = EXECUTION_TRACE_KEY_PREFIX + executionId;
+            Span span = Span.fromContext(context);
+            JSONObject contextInfo = new JSONObject();
+            contextInfo.put("traceId", span.getSpanContext().getTraceId());
+            contextInfo.put("spanId", span.getSpanContext().getSpanId());
+            contextInfo.put("traceFlags", span.getSpanContext().getTraceFlags().asHex());
+            
+            redisClient.set(key, contextInfo.toJSONString());
+            redisClient.expire(key, TRACE_EXPIRE_SECONDS);
+        } catch (Exception e) {
+            log.error("Failed to save execution context to Redis for execution: {}", executionId, e);
+        }
+    }
+
+    public Context loadExecutionContext(String executionId) {
+        try {
+            String key = EXECUTION_TRACE_KEY_PREFIX + executionId;
+            String contextInfoString = redisClient.get(key);
+
+            if (contextInfoString == null || contextInfoString.isEmpty()) {
+                return null;
+            }
+
+            JSONObject contextInfo = JSONObject.parseObject(contextInfoString);
+            String traceId = contextInfo.getString("traceId");
+            String spanId = contextInfo.getString("spanId");
+            String traceFlags = contextInfo.getString("traceFlags");
+
+            SpanContext spanContext = SpanContext.create(
+                    traceId,
+                    spanId,
+                    TraceFlags.fromHex(traceFlags, 0),
+                    TraceState.getDefault()
+            );
+
+            return Context.current().with(Span.wrap(spanContext));
+        } catch (Exception e) {
+            log.error("Failed to load execution context from Redis for execution: {}", executionId, e);
+            return null;
         }
     }
 }
