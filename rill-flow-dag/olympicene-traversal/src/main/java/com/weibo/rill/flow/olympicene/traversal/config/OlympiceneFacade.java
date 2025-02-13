@@ -65,7 +65,7 @@ public class OlympiceneFacade {
         Map<String, TaskRunner> taskRunners = buildTaskRunners(dagInfoStorage, dagContextStorage, dagDispatcher,
                 jsonPathInputOutputMapping, jsonPathInputOutputMapping, dagStorageProcedure, stasher, switcherManager);
 
-        DAGTraversal dagTraversal = new DAGTraversal(dagContextStorage, dagInfoStorage, dagStorageProcedure, executor);
+        DAGTraversal dagTraversal = new DAGTraversal(dagContextStorage, dagInfoStorage, dagStorageProcedure, executor, tracerHelper);
         DAGOperations dagOperations = new DAGOperations(executor, taskRunners, dagRunner, timeCheckRunner, dagTraversal, callback, dagResultHandler, tracerHelper);
         dagTraversal.setDagOperations(dagOperations);
         dagTraversal.setStasher(stasher);
