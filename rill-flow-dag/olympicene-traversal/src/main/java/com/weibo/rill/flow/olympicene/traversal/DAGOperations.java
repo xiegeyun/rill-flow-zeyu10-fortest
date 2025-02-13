@@ -116,16 +116,18 @@ public class DAGOperations {
         params.put("taskInfo", taskInfo);
         params.put("context", context);
 
+        // 获取当前的 Context，这应该包含了从异步任务传递过来的 context
+        Context parentContext = Context.current();
+        
         Span span = tracerHelper.getTracer().spanBuilder("runTask " + taskInfo.getName())
                 .setAttribute("execution.id", executionId)
                 .setAttribute("task.name", taskInfo.getName())
                 .setAttribute("task.category", taskInfo.getTask().getCategory())
-                .setParent(Context.current())
+                .setParent(parentContext)  // 显式设置父 context
                 .startSpan();
 
         TaskStatus executionResultStatus = null;
-        try (Scope ignore = span.makeCurrent()) {
-
+        try (Scope scope = Context.current().with(span).makeCurrent()) {
             TaskRunner runner = selectRunner(taskInfo);
             Supplier<ExecutionResult> basicActions = () -> runner.run(executionId, taskInfo, context);
 
@@ -143,8 +145,13 @@ public class DAGOperations {
              */
             // 对应1.1
             if (isTaskCompleted(executionResult)) {
-                dagTraversal.submitTraversal(executionId, taskInfo.getName());
-                invokeTaskCallback(executionId, taskInfo, context);
+                Context currentContext = Context.current();
+                runnerExecutor.execute(new ExecutionRunnable(executionId, () -> {
+                    try (Scope ignored = currentContext.makeCurrent()) {
+                        dagTraversal.submitTraversal(executionId, taskInfo.getName());
+                        invokeTaskCallback(executionId, taskInfo, context);
+                    }
+                }));
             }
             executionResultStatus = executionResult.getTaskStatus();
             // 对应1.2
@@ -152,7 +159,7 @@ public class DAGOperations {
                 Timeline timeline = Optional.ofNullable(taskInfo.getTask()).map(BaseTask::getTimeline).orElse(null);
                 Optional.ofNullable(getTimeoutSeconds(executionResult.getInput(), new HashMap<>(), timeline))
                         .ifPresent(timeoutSeconds -> timeCheckRunner.addTaskToTimeoutCheck(executionId, taskInfo, timeoutSeconds));
-                tracerHelper.saveContext(executionId, taskInfo.getName(), Context.current(), span);
+                tracerHelper.saveContext(executionId, taskInfo.getName(), parentContext, span);
                 return;
             }
             // 对应1.3
@@ -170,6 +177,7 @@ public class DAGOperations {
             }
         } finally {
             if (executionResultStatus != null && executionResultStatus.isCompleted()) {
+                span.setAttribute("status", executionResultStatus.toString());
                 span.end();
             }
         }
