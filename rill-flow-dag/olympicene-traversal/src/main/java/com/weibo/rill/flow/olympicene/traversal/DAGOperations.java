@@ -242,8 +242,14 @@ public class DAGOperations {
             }
             if (isTaskCompleted(executionResult)) {
                 timeCheckRunner.remTaskFromTimeoutCheck(executionId, executionResult.getTaskInfo());
-                dagTraversal.submitTraversal(executionId, executionResult.getTaskInfo().getName());
-                invokeTaskCallback(executionId, executionResult.getTaskInfo(), executionResult.getContext());
+                // 在恢复的 context 中触发下一个任务
+                Context parentContext = span != null ? Context.current() : Context.current();
+                runnerExecutor.execute(new ExecutionRunnable(executionId, () -> {
+                    try (Scope ignored = parentContext.makeCurrent()) {
+                        dagTraversal.submitTraversal(executionId, executionResult.getTaskInfo().getName());
+                        invokeTaskCallback(executionId, executionResult.getTaskInfo(), executionResult.getContext());
+                    }
+                }));
             }
             if (StringUtils.isNotBlank(executionResult.getTaskNameNeedToTraversal())) {
                 dagTraversal.submitTraversal(executionId, executionResult.getTaskNameNeedToTraversal());
@@ -257,7 +263,7 @@ public class DAGOperations {
         } finally {
             if (span != null && executionResult.getTaskStatus().isCompleted()) {
                 span.setAttribute("status", executionResult.getTaskStatus().toString());
-                span.end();  // 结束之前保存的 span
+                span.end();
             }
         }
     }
