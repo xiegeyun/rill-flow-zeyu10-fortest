@@ -96,10 +96,12 @@ public class TracerHelper {
         try {
             String key = EXECUTION_TRACE_KEY_PREFIX + executionId;
             Span span = Span.fromContext(context);
+            SpanContext spanContext = span.getSpanContext();
             JSONObject contextInfo = new JSONObject();
-            contextInfo.put("traceId", span.getSpanContext().getTraceId());
-            contextInfo.put("spanId", span.getSpanContext().getSpanId());
-            contextInfo.put("traceFlags", span.getSpanContext().getTraceFlags().asHex());
+            contextInfo.put("traceId", spanContext.getTraceId());
+            contextInfo.put("spanId", spanContext.getSpanId());
+            contextInfo.put("traceFlags", spanContext.getTraceFlags().asHex());
+            contextInfo.put("startTime", System.currentTimeMillis());  // 添加开始时间
             
             redisClient.set(key, contextInfo.toJSONString());
             redisClient.expire(key, TRACE_EXPIRE_SECONDS);
@@ -121,6 +123,7 @@ public class TracerHelper {
             String traceId = contextInfo.getString("traceId");
             String spanId = contextInfo.getString("spanId");
             String traceFlags = contextInfo.getString("traceFlags");
+            long startTime = Long.parseLong(contextInfo.getString("startTime"));
 
             SpanContext spanContext = SpanContext.create(
                     traceId,
