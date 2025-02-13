@@ -360,7 +360,7 @@ public class DAGOperations {
                 
                 // 在 DAG 完成时结束 span
                 dagSpan.setAttribute("status", dagStatus.name());
-                dagSpan.setAttribute("duration_ms", System.currentTimeMillis() - startTime);  // 添加持续时间
+//                dagSpan.setAttribute("duration_ms", System.currentTimeMillis() - startTime);  // 添加持续时间
                 dagSpan.end();
             }
         } else {
