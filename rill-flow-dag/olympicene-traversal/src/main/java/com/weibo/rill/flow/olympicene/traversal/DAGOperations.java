@@ -129,7 +129,7 @@ public class DAGOperations {
                 .startSpan();
 
         TaskStatus executionResultStatus = null;
-        try (Scope ignored = executionContext.makeCurrent()) {
+        try (Scope ignored = Context.current().with(span).makeCurrent()) {
             TaskRunner runner = selectRunner(taskInfo);
             Supplier<ExecutionResult> basicActions = () -> runner.run(executionId, taskInfo, context);
 
@@ -161,7 +161,7 @@ public class DAGOperations {
                 Timeline timeline = Optional.ofNullable(taskInfo.getTask()).map(BaseTask::getTimeline).orElse(null);
                 Optional.ofNullable(getTimeoutSeconds(executionResult.getInput(), new HashMap<>(), timeline))
                         .ifPresent(timeoutSeconds -> timeCheckRunner.addTaskToTimeoutCheck(executionId, taskInfo, timeoutSeconds));
-                tracerHelper.saveContext(executionId, taskInfo.getName(), executionContext, span);
+                tracerHelper.saveSpan(executionId, taskInfo.getName(), executionContext, span);
                 return;
             }
             // 对应1.3
