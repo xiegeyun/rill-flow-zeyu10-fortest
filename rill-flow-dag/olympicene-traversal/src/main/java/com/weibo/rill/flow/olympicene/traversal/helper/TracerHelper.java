@@ -36,7 +36,7 @@ public class TracerHelper {
         }
     }
 
-    public void saveContext(String executionId, String taskId, Context parentContext, Span currentSpan) {
+    public void saveSpan(String executionId, String taskId, Context parentContext, Span currentSpan) {
         try {
             String key = TRACE_KEY_PREFIX + executionId + "_" + taskId;
             JSONObject contextInfo = new JSONObject();
