@@ -231,32 +231,43 @@ public class DAGOperations {
 
         // 尝试恢复之前的 span
         Span span = tracerHelper.loadSpan(executionId, executionResult.getTaskInfo().getName());
+        Context currentContext = span != null ? Context.current().with(span) : Context.current();
         
-        try (Scope scope = span != null ? span.makeCurrent() : null) {
+        try (Scope scope = currentContext.makeCurrent()) {
             if (executionResult.getTaskStatus() == TaskStatus.READY && executionResult.isNeedRetry()) {
                 timeCheckRunner.remTaskFromTimeoutCheck(executionId, executionResult.getTaskInfo());
-                runTaskWithTimeInterval(executionId, executionResult.getTaskInfo(),
-                        executionResult.getContext(), executionResult.getRetryIntervalInSeconds());
+                runnerExecutor.execute(new ExecutionRunnable(executionId, () -> {
+                    try (Scope ignored = currentContext.makeCurrent()) {
+                        runTaskWithTimeInterval(executionId, executionResult.getTaskInfo(),
+                                executionResult.getContext(), executionResult.getRetryIntervalInSeconds());
+                    }
+                }));
             }
             if (isTaskCompleted(executionResult)) {
                 timeCheckRunner.remTaskFromTimeoutCheck(executionId, executionResult.getTaskInfo());
-                // 在恢复的 context 中触发下一个任务
-                Context parentContext = Context.current();
                 runnerExecutor.execute(new ExecutionRunnable(executionId, () -> {
-                    try (Scope ignored = parentContext.makeCurrent()) {
+                    try (Scope ignored = currentContext.makeCurrent()) {
                         dagTraversal.submitTraversal(executionId, executionResult.getTaskInfo().getName());
                         invokeTaskCallback(executionId, executionResult.getTaskInfo(), executionResult.getContext());
                     }
                 }));
             }
             if (StringUtils.isNotBlank(executionResult.getTaskNameNeedToTraversal())) {
-                dagTraversal.submitTraversal(executionId, executionResult.getTaskNameNeedToTraversal());
+                runnerExecutor.execute(new ExecutionRunnable(executionId, () -> {
+                    try (Scope ignored = currentContext.makeCurrent()) {
+                        dagTraversal.submitTraversal(executionId, executionResult.getTaskNameNeedToTraversal());
+                    }
+                }));
             }
 
             // key finished
             if (isForeachTaskKeyCompleted(executionResult, notifyInfo.getCompletedGroupIndex())
                     || isSubFlowTaskKeyCompleted(executionResult)) {
-                dagTraversal.submitTraversal(executionId, executionResult.getTaskInfo().getName());
+                runnerExecutor.execute(new ExecutionRunnable(executionId, () -> {
+                    try (Scope ignored = currentContext.makeCurrent()) {
+                        dagTraversal.submitTraversal(executionId, executionResult.getTaskInfo().getName());
+                    }
+                }));
             }
         } finally {
             if (span != null && executionResult.getTaskStatus().isCompleted()) {
