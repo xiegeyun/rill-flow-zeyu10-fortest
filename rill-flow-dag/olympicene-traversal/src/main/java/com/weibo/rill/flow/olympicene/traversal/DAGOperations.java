@@ -43,8 +43,6 @@ import com.weibo.rill.flow.olympicene.traversal.runners.DAGRunner;
 import com.weibo.rill.flow.olympicene.traversal.runners.TaskRunner;
 import com.weibo.rill.flow.olympicene.traversal.runners.TimeCheckRunner;
 import io.opentelemetry.api.trace.Span;
-import io.opentelemetry.api.trace.SpanContext;
-import io.opentelemetry.api.trace.SpanKind;
 import io.opentelemetry.context.Context;
 import io.opentelemetry.context.Scope;
 import lombok.extern.slf4j.Slf4j;
@@ -243,7 +241,7 @@ public class DAGOperations {
             if (isTaskCompleted(executionResult)) {
                 timeCheckRunner.remTaskFromTimeoutCheck(executionId, executionResult.getTaskInfo());
                 // 在恢复的 context 中触发下一个任务
-                Context parentContext = span != null ? Context.current() : Context.current();
+                Context parentContext = Context.current();
                 runnerExecutor.execute(new ExecutionRunnable(executionId, () -> {
                     try (Scope ignored = parentContext.makeCurrent()) {
                         dagTraversal.submitTraversal(executionId, executionResult.getTaskInfo().getName());
