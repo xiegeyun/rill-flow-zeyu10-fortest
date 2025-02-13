@@ -18,6 +18,7 @@ package com.weibo.rill.flow.olympicene.traversal;
 
 import com.google.common.collect.Lists;
 import com.google.common.collect.Maps;
+import com.weibo.rill.flow.common.constant.ReservedConstant;
 import com.weibo.rill.flow.interfaces.model.mapping.Mapping;
 import com.weibo.rill.flow.interfaces.model.strategy.Timeline;
 import com.weibo.rill.flow.interfaces.model.task.*;
@@ -37,9 +38,13 @@ import com.weibo.rill.flow.olympicene.traversal.callback.DAGEvent;
 import com.weibo.rill.flow.olympicene.traversal.constant.TraversalErrorCode;
 import com.weibo.rill.flow.olympicene.traversal.exception.DAGTraversalException;
 import com.weibo.rill.flow.olympicene.traversal.helper.PluginHelper;
+import com.weibo.rill.flow.olympicene.traversal.helper.TracerHelper;
 import com.weibo.rill.flow.olympicene.traversal.runners.DAGRunner;
 import com.weibo.rill.flow.olympicene.traversal.runners.TaskRunner;
 import com.weibo.rill.flow.olympicene.traversal.runners.TimeCheckRunner;
+import io.opentelemetry.api.trace.Span;
+import io.opentelemetry.context.Context;
+import io.opentelemetry.context.Scope;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.collections.CollectionUtils;
 import org.apache.commons.lang3.StringUtils;
@@ -61,6 +66,7 @@ public class DAGOperations {
     private final DAGTraversal dagTraversal;
     private final Callback<DAGCallbackInfo> callback;
     private final DAGResultHandler dagResultHandler;
+    private final TracerHelper tracerHelper;
 
 
     public static final BiConsumer<Runnable, Integer> OPERATE_WITH_RETRY = (operation, retryTimes) -> {
@@ -79,7 +85,7 @@ public class DAGOperations {
 
     public DAGOperations(ExecutorService runnerExecutor, Map<String, TaskRunner> taskRunners, DAGRunner dagRunner,
                          TimeCheckRunner timeCheckRunner, DAGTraversal dagTraversal, Callback<DAGCallbackInfo> callback,
-                         DAGResultHandler dagResultHandler) {
+                         DAGResultHandler dagResultHandler, TracerHelper tracerHelper) {
         this.runnerExecutor = runnerExecutor;
         this.taskRunners = taskRunners;
         this.dagRunner = dagRunner;
@@ -87,15 +93,20 @@ public class DAGOperations {
         this.dagTraversal = dagTraversal;
         this.callback = callback;
         this.dagResultHandler = dagResultHandler;
+        this.tracerHelper = tracerHelper;
     }
 
     public void runTasks(String executionId, Collection<Pair<TaskInfo, Map<String, Object>>> taskInfoToContexts) {
         log.info("runTasks begin submit task executionId:{}", executionId);
+        Context parentContext = Context.current();  // 捕获当前的 context
+        
         taskInfoToContexts.forEach(taskInfoToContext -> runnerExecutor.execute(new ExecutionRunnable(executionId, () -> {
             TaskInfo taskInfo = taskInfoToContext.getLeft();
             try {
                 log.info("runTasks task begin to execute executionId:{} taskInfoName:{}", executionId, taskInfo.getName());
-                runTask(executionId, taskInfo, taskInfoToContext.getRight());
+                try (Scope ignored = parentContext.makeCurrent()) {  // 在新线程中恢复 context
+                    runTask(executionId, taskInfo, taskInfoToContext.getRight());
+                }
             } catch (Exception e) {
                 log.error("runTasks fails, executionId:{}, taskName:{}", executionId, taskInfo.getName(), e);
             }
@@ -104,49 +115,73 @@ public class DAGOperations {
 
 
     private void runTask(String executionId, TaskInfo taskInfo, Map<String, Object> context) {
-        Map<String, Object> params = Maps.newHashMap();
-        params.put(EXECUTION_ID, executionId);
-        params.put("taskInfo", taskInfo);
-        params.put("context", context);
-
-        TaskRunner runner = selectRunner(taskInfo);
-        Supplier<ExecutionResult> basicActions = () -> runner.run(executionId, taskInfo, context);
-
-        Supplier<ExecutionResult> supplier = PluginHelper.pluginInvokeChain(basicActions, params, SystemConfig.TASK_RUN_CUSTOMIZED_PLUGINS);
-        ExecutionResult executionResult = supplier.get();
-
-        /*
-          任务执行后结果类型
-          1. 任务执行完成 如 return/pass
-            1.1 任务执行完成 需要寻找下一个能执行的任务
-            1.2 任务执行中 需要外部系统调finish触发下一个任务执行
-            1.3 任务需要重试
-          2. 流程控制类任务 foreach/choice
-            2.1 触发能够执行的子任务
-         */
-        // 对应1.1
-        if (isTaskCompleted(executionResult)) {
-            dagTraversal.submitTraversal(executionId, taskInfo.getName());
-            invokeTaskCallback(executionId, taskInfo, context);
+        // 恢复 execution context
+        Context executionContext = tracerHelper.loadExecutionContext(executionId);
+        if (executionContext == null) {
+            executionContext = Context.current();
         }
-        // 对应1.2
-        if (executionResult.getTaskStatus() == TaskStatus.RUNNING) {
-            Timeline timeline = Optional.ofNullable(taskInfo.getTask()).map(BaseTask::getTimeline).orElse(null);
-            Optional.ofNullable(getTimeoutSeconds(executionResult.getInput(), new HashMap<>(), timeline))
-                    .ifPresent(timeoutSeconds -> timeCheckRunner.addTaskToTimeoutCheck(executionId, taskInfo, timeoutSeconds));
-        }
-        // 对应1.3
-        if (executionResult.getTaskStatus() == TaskStatus.READY && executionResult.isNeedRetry()) {
-            runTaskWithTimeInterval(executionId, executionResult.getTaskInfo(),
-                    executionResult.getContext(), executionResult.getRetryIntervalInSeconds());
-        }
-        // 对应2.1
-        if (CollectionUtils.isNotEmpty(executionResult.getSubTaskInfosAndContext())) {
-            executionResult.getSubTaskInfosAndContext()
-                    .forEach(subTaskInfosAndContext -> {
-                        dagTraversal.submitTasks(executionId, subTaskInfosAndContext.getLeft(), subTaskInfosAndContext.getRight());
-                        safeSleep(10);
-                    });
+        
+        Span span = tracerHelper.getTracer().spanBuilder("runTask " + taskInfo.getName())
+                .setAttribute("execution.id", executionId)
+                .setAttribute("task.name", taskInfo.getName())
+                .setAttribute("task.category", taskInfo.getTask().getCategory())
+                .setParent(executionContext)
+                .startSpan();
+
+        TaskStatus executionResultStatus = null;
+        try (Scope ignored = Context.current().with(span).makeCurrent()) {
+            TaskRunner runner = selectRunner(taskInfo);
+            Supplier<ExecutionResult> basicActions = () -> runner.run(executionId, taskInfo, context);
+
+            Supplier<ExecutionResult> supplier = PluginHelper.pluginInvokeChain(basicActions, Maps.newHashMap(), SystemConfig.TASK_RUN_CUSTOMIZED_PLUGINS);
+            ExecutionResult executionResult = supplier.get();
+
+            /*
+              任务执行后结果类型
+              1. 任务执行完成 如 return/pass
+                1.1 任务执行完成 需要寻找下一个能执行的任务
+                1.2 任务执行中 需要外部系统调finish触发下一个任务执行
+                1.3 任务需要重试
+              2. 流程控制类任务 foreach/choice
+                2.1 触发能够执行的子任务
+             */
+            // 对应1.1
+            if (isTaskCompleted(executionResult)) {
+                Context currentContext = Context.current();
+                runnerExecutor.execute(new ExecutionRunnable(executionId, () -> {
+                    try (Scope ignore = currentContext.makeCurrent()) {
+                        dagTraversal.submitTraversal(executionId, taskInfo.getName());
+                        invokeTaskCallback(executionId, taskInfo, context);
+                    }
+                }));
+            }
+            executionResultStatus = executionResult.getTaskStatus();
+            // 对应1.2
+            if (executionResult.getTaskStatus() == TaskStatus.RUNNING) {
+                Timeline timeline = Optional.ofNullable(taskInfo.getTask()).map(BaseTask::getTimeline).orElse(null);
+                Optional.ofNullable(getTimeoutSeconds(executionResult.getInput(), new HashMap<>(), timeline))
+                        .ifPresent(timeoutSeconds -> timeCheckRunner.addTaskToTimeoutCheck(executionId, taskInfo, timeoutSeconds));
+                tracerHelper.saveSpan(executionId, taskInfo.getName(), executionContext, span);
+                return;
+            }
+            // 对应1.3
+            if (executionResult.getTaskStatus() == TaskStatus.READY && executionResult.isNeedRetry()) {
+                runTaskWithTimeInterval(executionId, executionResult.getTaskInfo(),
+                        executionResult.getContext(), executionResult.getRetryIntervalInSeconds());
+            }
+            // 对应2.1
+            if (CollectionUtils.isNotEmpty(executionResult.getSubTaskInfosAndContext())) {
+                executionResult.getSubTaskInfosAndContext()
+                        .forEach(subTaskInfosAndContext -> {
+                            dagTraversal.submitTasks(executionId, subTaskInfosAndContext.getLeft(), subTaskInfosAndContext.getRight());
+                            safeSleep(10);
+                        });
+            }
+        } finally {
+            if (executionResultStatus != null && executionResultStatus.isCompleted()) {
+                span.setAttribute("status", executionResultStatus.toString());
+                span.end();
+            }
         }
     }
 
@@ -204,24 +239,51 @@ public class DAGOperations {
         Supplier<ExecutionResult> supplier = PluginHelper.pluginInvokeChain(basicActions, params, SystemConfig.TASK_FINISH_CUSTOMIZED_PLUGINS);
         ExecutionResult executionResult = supplier.get();
 
-        if (executionResult.getTaskStatus() == TaskStatus.READY && executionResult.isNeedRetry()) {
-            timeCheckRunner.remTaskFromTimeoutCheck(executionId, executionResult.getTaskInfo());
-            runTaskWithTimeInterval(executionId, executionResult.getTaskInfo(),
-                    executionResult.getContext(), executionResult.getRetryIntervalInSeconds());
-        }
-        if (isTaskCompleted(executionResult)) {
-            timeCheckRunner.remTaskFromTimeoutCheck(executionId, executionResult.getTaskInfo());
-            dagTraversal.submitTraversal(executionId, executionResult.getTaskInfo().getName());
-            invokeTaskCallback(executionId, executionResult.getTaskInfo(), executionResult.getContext());
-        }
-        if (StringUtils.isNotBlank(executionResult.getTaskNameNeedToTraversal())) {
-            dagTraversal.submitTraversal(executionId, executionResult.getTaskNameNeedToTraversal());
-        }
+        // 尝试恢复之前的 span
+        Span span = tracerHelper.loadSpan(executionId, executionResult.getTaskInfo().getName());
+        Context currentContext = span != null ? Context.current().with(span) : Context.current();
+        
+        try (Scope scope = currentContext.makeCurrent()) {
+            if (executionResult.getTaskStatus() == TaskStatus.READY && executionResult.isNeedRetry()) {
+                timeCheckRunner.remTaskFromTimeoutCheck(executionId, executionResult.getTaskInfo());
+                runnerExecutor.execute(new ExecutionRunnable(executionId, () -> {
+                    try (Scope ignored = currentContext.makeCurrent()) {
+                        runTaskWithTimeInterval(executionId, executionResult.getTaskInfo(),
+                                executionResult.getContext(), executionResult.getRetryIntervalInSeconds());
+                    }
+                }));
+            }
+            if (isTaskCompleted(executionResult)) {
+                timeCheckRunner.remTaskFromTimeoutCheck(executionId, executionResult.getTaskInfo());
+                runnerExecutor.execute(new ExecutionRunnable(executionId, () -> {
+                    try (Scope ignored = currentContext.makeCurrent()) {
+                        dagTraversal.submitTraversal(executionId, executionResult.getTaskInfo().getName());
+                        invokeTaskCallback(executionId, executionResult.getTaskInfo(), executionResult.getContext());
+                    }
+                }));
+            }
+            if (StringUtils.isNotBlank(executionResult.getTaskNameNeedToTraversal())) {
+                runnerExecutor.execute(new ExecutionRunnable(executionId, () -> {
+                    try (Scope ignored = currentContext.makeCurrent()) {
+                        dagTraversal.submitTraversal(executionId, executionResult.getTaskNameNeedToTraversal());
+                    }
+                }));
+            }
 
-        // key finished
-        if (isForeachTaskKeyCompleted(executionResult, notifyInfo.getCompletedGroupIndex())
-                || isSubFlowTaskKeyCompleted(executionResult)) {
-            dagTraversal.submitTraversal(executionId, executionResult.getTaskInfo().getName());
+            // key finished
+            if (isForeachTaskKeyCompleted(executionResult, notifyInfo.getCompletedGroupIndex())
+                    || isSubFlowTaskKeyCompleted(executionResult)) {
+                runnerExecutor.execute(new ExecutionRunnable(executionId, () -> {
+                    try (Scope ignored = currentContext.makeCurrent()) {
+                        dagTraversal.submitTraversal(executionId, executionResult.getTaskInfo().getName());
+                    }
+                }));
+            }
+        } finally {
+            if (span != null && executionResult.getTaskStatus().isCompleted()) {
+                span.setAttribute("status", executionResult.getTaskStatus().toString());
+                span.end();
+            }
         }
     }
 
@@ -232,15 +294,87 @@ public class DAGOperations {
     }
 
     public void submitDAG(String executionId, DAG dag, DAGSettings settings, Map<String, Object> data, NotifyInfo notifyInfo) {
-        log.info("submitDAG task begin to execute executionId:{} notifyInfo:{}", executionId, notifyInfo);
-        ExecutionResult executionResult = dagRunner.submitDAG(executionId, dag, settings, data, notifyInfo);
-        Optional.ofNullable(getTimeoutSeconds(new HashMap<>(), executionResult.getContext(), dag.getTimeline()))
-                .ifPresent(timeoutSeconds -> timeCheckRunner.addDAGToTimeoutCheck(executionId, timeoutSeconds));
-        dagTraversal.submitTraversal(executionId, null);
+        String[] executionIdInfos = executionId.split(ReservedConstant.EXECUTION_ID_CONNECTOR);
+        String descriptorId = executionIdInfos[0];
+        
+        // 创建 DAG 的根 span
+        Span dagSpan = tracerHelper.getTracer().spanBuilder("submitDAG " + descriptorId)
+                .setAttribute("execution.id", executionId)
+                .setAttribute("dag.name", dag.getDagName())
+                .setParent(Context.current())  // 显式设置父 context
+                .startSpan();
+        
+        Context dagContext = Context.current().with(dagSpan);
+        try (Scope ignored = dagContext.makeCurrent()) {
+            // 保存 execution context
+            tracerHelper.saveExecutionContext(executionId, dagContext);
+            
+            log.info("submitDAG task begin to execute executionId:{} notifyInfo:{}", executionId, notifyInfo);
+            ExecutionResult executionResult = dagRunner.submitDAG(executionId, dag, settings, data, notifyInfo);
+            Optional.ofNullable(getTimeoutSeconds(new HashMap<>(), executionResult.getContext(), dag.getTimeline()))
+                    .ifPresent(timeoutSeconds -> timeCheckRunner.addDAGToTimeoutCheck(executionId, timeoutSeconds));
+            dagTraversal.submitTraversal(executionId, null);
+        } finally {
+            // 不要在这里结束 span，让它持续到整个流程结束
+            // dagSpan.end();
+        }
     }
 
     public void finishDAG(String executionId, DAGInfo dagInfo, DAGStatus dagStatus, DAGInvokeMsg dagInvokeMsg) {
         log.info("finishDAG task begin to execute executionId:{} dagStatus:{}", executionId, dagStatus);
+        
+        // 恢复 execution context 以获取 DAG span
+        Context executionContext = tracerHelper.loadExecutionContext(executionId);
+        if (executionContext != null) {
+            Span dagSpan = Span.fromContext(executionContext);
+            try (Scope ignored = executionContext.makeCurrent()) {
+                ExecutionResult executionResult = finishDAGInternal(executionId, dagInfo, dagStatus, dagInvokeMsg);
+
+                DAGInfo dagInfoRet = executionResult.getDagInfo();
+                Map<String, Object> context = executionResult.getContext();
+
+                timeCheckRunner.remDAGFromTimeoutCheck(executionId, dagInfoRet.getDag());
+
+                List<ExecutionInfo> executionRoutes = Optional.ofNullable(dagInfoRet.getDagInvokeMsg())
+                        .map(DAGInvokeMsg::getExecutionRoutes)
+                        .orElse(new ArrayList<>());
+                executionRoutes.stream()
+                        .max(Comparator.comparingInt(ExecutionInfo::getIndex))
+                        .filter(executionInfo -> executionInfo.getExecutionType() == FunctionPattern.FLOW_SYNC)
+                        .ifPresent(executionInfo -> {
+                            try {
+                                String parentDAGExecutionId = executionInfo.getExecutionId();
+                                String taskInfoName = executionInfo.getTaskInfoName();
+                                TaskStatus taskStatus = calculateSubFlowTaskStatus(dagInfoRet);
+                                TaskInvokeMsg taskInvokeMsg = Optional.ofNullable(dagInfoRet.getDagInvokeMsg())
+                                        .map(it -> TaskInvokeMsg.builder().code(it.getCode()).msg(it.getMsg()).ext(it.getExt()).build())
+                                        .orElse(null);
+                                NotifyInfo notifyInfo = NotifyInfo.builder().taskInfoName(taskInfoName).taskStatus(taskStatus).taskInvokeMsg(taskInvokeMsg).build();
+                                finishTaskSync(parentDAGExecutionId, TaskCategory.FUNCTION.getValue(), notifyInfo, context);
+                            } catch (Exception e) {
+                                log.warn("finishDAG fails to finish task, executionInfo:{}", executionInfo, e);
+                            }
+                        });
+
+                trialClose(executionId, dagStatus, dagInfoRet, context);
+                
+                // 在 DAG 完成时结束 span
+                dagSpan.setAttribute("status", dagStatus.name());
+                dagSpan.end();
+            }
+        } else {
+            ExecutionResult executionResult = finishDAGInternal(executionId, dagInfo, dagStatus, dagInvokeMsg);
+
+            DAGInfo dagInfoRet = executionResult.getDagInfo();
+            Map<String, Object> context = executionResult.getContext();
+
+            timeCheckRunner.remDAGFromTimeoutCheck(executionId, dagInfoRet.getDag());
+
+            trialClose(executionId, dagStatus, dagInfoRet, context);
+        }
+    }
+
+    private ExecutionResult finishDAGInternal(String executionId, DAGInfo dagInfo, DAGStatus dagStatus, DAGInvokeMsg dagInvokeMsg) {
         Map<String, Object> params = Maps.newHashMap();
         params.put(EXECUTION_ID, executionId);
         params.put("dagInfo", dagInfo);
@@ -249,35 +383,7 @@ public class DAGOperations {
         Supplier<ExecutionResult> basicActions = () -> dagRunner.finishDAG(executionId, dagInfo, dagStatus, dagInvokeMsg);
 
         Supplier<ExecutionResult> supplier = PluginHelper.pluginInvokeChain(basicActions, params, SystemConfig.DAG_FINISH_CUSTOMIZED_PLUGINS);
-        ExecutionResult executionResult = supplier.get();
-
-        DAGInfo dagInfoRet = executionResult.getDagInfo();
-        Map<String, Object> context = executionResult.getContext();
-
-        timeCheckRunner.remDAGFromTimeoutCheck(executionId, dagInfoRet.getDag());
-
-        List<ExecutionInfo> executionRoutes = Optional.ofNullable(dagInfoRet.getDagInvokeMsg())
-                .map(DAGInvokeMsg::getExecutionRoutes)
-                .orElse(new ArrayList<>());
-        executionRoutes.stream()
-                .max(Comparator.comparingInt(ExecutionInfo::getIndex))
-                .filter(executionInfo -> executionInfo.getExecutionType() == FunctionPattern.FLOW_SYNC)
-                .ifPresent(executionInfo -> {
-                    try {
-                        String parentDAGExecutionId = executionInfo.getExecutionId();
-                        String taskInfoName = executionInfo.getTaskInfoName();
-                        TaskStatus taskStatus = calculateSubFlowTaskStatus(dagInfoRet);
-                        TaskInvokeMsg taskInvokeMsg = Optional.ofNullable(dagInfoRet.getDagInvokeMsg())
-                                .map(it -> TaskInvokeMsg.builder().code(it.getCode()).msg(it.getMsg()).ext(it.getExt()).build())
-                                .orElse(null);
-                        NotifyInfo notifyInfo = NotifyInfo.builder().taskInfoName(taskInfoName).taskStatus(taskStatus).taskInvokeMsg(taskInvokeMsg).build();
-                        finishTaskSync(parentDAGExecutionId, TaskCategory.FUNCTION.getValue(), notifyInfo, context);
-                    } catch (Exception e) {
-                        log.warn("finishDAG fails to finish task, executionInfo:{}", executionInfo, e);
-                    }
-                });
-
-        trialClose(executionId, dagStatus, dagInfoRet, context);
+        return supplier.get();
     }
 
     private TaskStatus calculateSubFlowTaskStatus(DAGInfo dagInfoRet) {

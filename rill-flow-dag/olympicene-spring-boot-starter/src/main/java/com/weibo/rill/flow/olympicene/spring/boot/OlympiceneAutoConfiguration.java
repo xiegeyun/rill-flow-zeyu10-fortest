@@ -146,9 +146,10 @@ public class OlympiceneAutoConfiguration {
             @Autowired @Qualifier("dagContextStorage") DAGContextStorage dagContextStorage,
             @Autowired @Qualifier("dagInfoStorage") DAGInfoStorage dagInfoStorage,
             @Autowired @Qualifier("dagStorageProcedure") DAGStorageProcedure dagStorageProcedure,
-            @Autowired @Qualifier("traversalExecutor") ExecutorService traversalExecutor) {
+            @Autowired @Qualifier("traversalExecutor") ExecutorService traversalExecutor,
+            @Autowired TracerHelper tracerHelper) {
         log.info("begin to init default DAGTraversal bean");
-        DAGTraversal dagTraversal = new DAGTraversal(dagContextStorage, dagInfoStorage, dagStorageProcedure, traversalExecutor);
+        DAGTraversal dagTraversal = new DAGTraversal(dagContextStorage, dagInfoStorage, dagStorageProcedure, traversalExecutor, tracerHelper);
         dagTraversal.setStasher(stasher);
         return dagTraversal;
     }
@@ -299,10 +300,11 @@ public class OlympiceneAutoConfiguration {
             @Autowired @Qualifier("dagCallback") Callback<DAGCallbackInfo> dagCallback,
             @Autowired @Qualifier("timeCheckRunner") TimeCheckRunner timeCheckRunner,
             @Autowired @Qualifier("runnerExecutor") ExecutorService runnerExecutor,
-            @Autowired(required = false) @Qualifier("dagResultHandler") DAGResultHandler dagResultHandler) {
+            @Autowired(required = false) @Qualifier("dagResultHandler") DAGResultHandler dagResultHandler,
+            @Autowired @Qualifier("tracerHelper") TracerHelper tracerHelper) {
         log.info("begin to init default DAGOperations bean");
         DAGOperations dagOperations = new DAGOperations(runnerExecutor, taskRunners, dagRunner,
-                timeCheckRunner, dagTraversal, dagCallback, dagResultHandler);
+                timeCheckRunner, dagTraversal, dagCallback, dagResultHandler, tracerHelper);
         dagTraversal.setDagOperations(dagOperations);
         timeCheckRunner.setDagOperations(dagOperations);
         return dagOperations;

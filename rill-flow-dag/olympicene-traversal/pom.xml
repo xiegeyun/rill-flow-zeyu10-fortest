@@ -81,6 +81,10 @@
             <groupId>io.opentelemetry</groupId>
             <artifactId>opentelemetry-sdk-extension-autoconfigure-spi</artifactId>
         </dependency>
+        <dependency>
+            <groupId>com.weibo</groupId>
+            <artifactId>rill-flow-common</artifactId>
+        </dependency>
     </dependencies>
 
 </project>
