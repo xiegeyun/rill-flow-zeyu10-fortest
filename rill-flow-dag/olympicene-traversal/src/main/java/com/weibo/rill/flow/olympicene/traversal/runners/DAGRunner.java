@@ -70,6 +70,7 @@ public class DAGRunner {
     public ExecutionResult submitDAG(String executionId, DAG dag, DAGSettings settings, Map<String, Object> data, NotifyInfo notifyInfo) {
         ExecutionResult ret = ExecutionResult.builder().build();
 
+
         dagStorageProcedure.lockAndRun(LockerKey.buildDagInfoLockName(executionId), () -> {
             DAGInfo currentExecutionIdDagInfo = dagInfoStorage.getBasicDAGInfo(executionId);
             submitValidate(executionId, dag, settings.isIgnoreExist(), currentExecutionIdDagInfo);

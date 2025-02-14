@@ -37,6 +37,7 @@ import com.weibo.rill.flow.olympicene.traversal.helper.Stasher;
 import com.weibo.rill.flow.olympicene.traversal.helper.TracerHelper;
 import io.opentelemetry.context.Context;
 import io.opentelemetry.context.Scope;
+import io.opentelemetry.api.trace.Span;
 import lombok.Setter;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.collections.CollectionUtils;
@@ -78,7 +79,15 @@ public class DAGTraversal {
         if (executionContext == null) {
             executionContext = Context.current();
         }
-        Context finalContext = executionContext;  // 为了在 lambda 中使用
+        
+        // 创建子 span
+        Span traversalSpan = tracerHelper.getTracer().spanBuilder("submitTraversal")
+                .setAttribute("execution.id", executionId)
+                .setAttribute("completed_task", completedTaskName != null ? completedTaskName : "")
+                .setParent(executionContext)
+                .startSpan();
+        
+        Context finalContext = executionContext.with(traversalSpan);
 
         traversalExecutor.execute(new ExecutionRunnable(executionId,() -> {
             try {
@@ -95,6 +104,8 @@ public class DAGTraversal {
                 }
             } catch (Exception e) {
                 log.error("executionId:{} traversal exception with completedTaskName:{}. ", executionId, completedTaskName, e);
+            } finally {
+                traversalSpan.end();
             }
         }));
     }
@@ -128,34 +139,55 @@ public class DAGTraversal {
     }
 
     public void doTraversal(String executionId, String completedTaskName) {
-        log.info("doTraversal start, executionId:{}", executionId);
-        if (StringUtils.isEmpty(completedTaskName) || DAGWalkHelper.getInstance().isAncestorTask(completedTaskName)) {
-            traversalAncestorTasks(executionId);
-        } else {
-            traversalNestedTasks(executionId, completedTaskName);
+        // 创建子 span
+        Span doTraversalSpan = tracerHelper.getTracer().spanBuilder("doTraversal")
+                .setAttribute("execution.id", executionId)
+                .setAttribute("completed_task", completedTaskName != null ? completedTaskName : "")
+                .setParent(Context.current())
+                .startSpan();
+                
+        try (Scope scope = doTraversalSpan.makeCurrent()) {
+            log.info("doTraversal start, executionId:{}", executionId);
+            if (StringUtils.isEmpty(completedTaskName) || DAGWalkHelper.getInstance().isAncestorTask(completedTaskName)) {
+                traversalAncestorTasks(executionId);
+            } else {
+                traversalNestedTasks(executionId, completedTaskName);
+            }
+        } finally {
+            doTraversalSpan.end();
         }
     }
 
     private void traversalAncestorTasks(String executionId) {
-        DAGInfo dagInfo = dagInfoStorage.getBasicDAGInfo(executionId);
-        if (dagInfo == null || dagInfo.getDagStatus().isCompleted()) {
-            return;
-        }
+        // 创建子 span
+        Span ancestorSpan = tracerHelper.getTracer().spanBuilder("traversalAncestorTasks")
+                .setAttribute("execution.id", executionId)
+                .setParent(Context.current())
+                .startSpan();
+                
+        try (Scope scope = ancestorSpan.makeCurrent()) {
+            DAGInfo dagInfo = dagInfoStorage.getBasicDAGInfo(executionId);
+            if (dagInfo == null || dagInfo.getDagStatus().isCompleted()) {
+                return;
+            }
 
-        Set<TaskInfo> readyToRunTasks = DAGWalkHelper.getInstance().getReadyToRunTasks(dagInfo.getTasks().values());
-        if (CollectionUtils.isNotEmpty(readyToRunTasks)) {
-            List<Pair<TaskInfo, Map<String, Object>>> taskToContexts = contextHelper.getContext(dagContextStorage, executionId, readyToRunTasks);
-            runTasks(executionId, taskToContexts);
-            return;
-        }
+            Set<TaskInfo> readyToRunTasks = DAGWalkHelper.getInstance().getReadyToRunTasks(dagInfo.getTasks().values());
+            if (CollectionUtils.isNotEmpty(readyToRunTasks)) {
+                List<Pair<TaskInfo, Map<String, Object>>> taskToContexts = contextHelper.getContext(dagContextStorage, executionId, readyToRunTasks);
+                runTasks(executionId, taskToContexts);
+                return;
+            }
 
-        DAGStatus calculatedDAGStatus = DAGWalkHelper.getInstance().calculateDAGStatus(dagInfo);
-        if (calculatedDAGStatus.isCompleted()) {
-            dagOperations.finishDAG(executionId, dagInfo, calculatedDAGStatus, null);
-        }
+            DAGStatus calculatedDAGStatus = DAGWalkHelper.getInstance().calculateDAGStatus(dagInfo);
+            if (calculatedDAGStatus.isCompleted()) {
+                dagOperations.finishDAG(executionId, dagInfo, calculatedDAGStatus, null);
+            }
 
-        if (DAGStatus.KEY_SUCCEED.equals(calculatedDAGStatus)) {
-            dagOperations.finishDAG(executionId, dagInfo, calculatedDAGStatus, null);
+            if (DAGStatus.KEY_SUCCEED.equals(calculatedDAGStatus)) {
+                dagOperations.finishDAG(executionId, dagInfo, calculatedDAGStatus, null);
+            }
+        } finally {
+            ancestorSpan.end();
         }
     }
 
