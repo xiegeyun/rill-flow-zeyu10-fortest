@@ -242,7 +242,7 @@ public class DAGOperations {
         // 尝试恢复之前的 span
         Span span = tracerHelper.loadSpan(executionId, executionResult.getTaskInfo().getName());
         Context currentContext = span != null ? Context.current().with(span) : Context.current();
-        
+
         try (Scope scope = currentContext.makeCurrent()) {
             if (executionResult.getTaskStatus() == TaskStatus.READY && executionResult.isNeedRetry()) {
                 timeCheckRunner.remTaskFromTimeoutCheck(executionId, executionResult.getTaskInfo());
@@ -298,7 +298,7 @@ public class DAGOperations {
         String descriptorId = executionIdInfos[0];
         
         // 创建 DAG 的根 span
-        Span dagSpan = tracerHelper.getTracer().spanBuilder("submitDAG " + descriptorId)
+        Span dagSpan = tracerHelper.getTracer().spanBuilder("submitDAG")
                 .setAttribute("execution.id", executionId)
                 .setAttribute("dag.name", dag.getDagName())
                 .setParent(Context.current())  // 显式设置父 context
@@ -307,7 +307,7 @@ public class DAGOperations {
         Context dagContext = Context.current().with(dagSpan);
         try (Scope ignored = dagContext.makeCurrent()) {
             // 保存 execution context
-            tracerHelper.saveExecutionContext(executionId, dagContext);
+             tracerHelper.saveExecutionContext(executionId+"-submitDAG", dagContext);
             
             log.info("submitDAG task begin to execute executionId:{} notifyInfo:{}", executionId, notifyInfo);
             ExecutionResult executionResult = dagRunner.submitDAG(executionId, dag, settings, data, notifyInfo);
@@ -315,54 +315,36 @@ public class DAGOperations {
                     .ifPresent(timeoutSeconds -> timeCheckRunner.addDAGToTimeoutCheck(executionId, timeoutSeconds));
             dagTraversal.submitTraversal(executionId, null);
         } finally {
-            // 不要在这里结束 span，让它持续到整个流程结束
-            // dagSpan.end();
+            /**
+             * OpenTelemetry 的最佳实践中指出
+             * 		- Span 应该遵循"谁创建，谁负责结束"的原则
+             * 		- 每个方法/操作应该创建自己的Span，并通过 Context关联到父Span建立父子关系，
+             * 		  这样既能准确统计耗时，又能在 Jaeger 中正确显示调用关系。
+             * 		- 如果需要统计某个区间的耗时，应该创建一个新的 Span，而不是复用已有的 Span
+             * 		- 传递和复用 Span 可能导致并发问题和不可预期的行为
+             * 	    - 调用链中的每一层在一个context中
+             */
+            dagSpan.end();
         }
     }
 
     public void finishDAG(String executionId, DAGInfo dagInfo, DAGStatus dagStatus, DAGInvokeMsg dagInvokeMsg) {
         log.info("finishDAG task begin to execute executionId:{} dagStatus:{}", executionId, dagStatus);
-        
-        // 恢复 execution context 以获取 DAG span
-        Context executionContext = tracerHelper.loadExecutionContext(executionId);
-        if (executionContext != null) {
-            Span dagSpan = Span.fromContext(executionContext);
-            try (Scope ignored = executionContext.makeCurrent()) {
-                ExecutionResult executionResult = finishDAGInternal(executionId, dagInfo, dagStatus, dagInvokeMsg);
+        // 获取 traversalAncestorTasks Context
+        Context traversalAncestorTasksContext = tracerHelper.loadExecutionContext(executionId+"-traversalAncestorTasks");
+        if (traversalAncestorTasksContext == null) {
+            traversalAncestorTasksContext = Context.current();
+        }
+        // 创建子 span
+        Span finishDAGSpan = tracerHelper.getTracer().spanBuilder("finishDAG")
+                .setAttribute("execution.id", executionId)
+                .setAttribute("DAGInfo", dagInfo.toString())
+                .setAttribute("DAGStatus", dagStatus.toString())
+                .setAttribute("DAGInvokeMsg", dagInvokeMsg.toString())
+                .setParent(traversalAncestorTasksContext)
+                .startSpan();
 
-                DAGInfo dagInfoRet = executionResult.getDagInfo();
-                Map<String, Object> context = executionResult.getContext();
-
-                timeCheckRunner.remDAGFromTimeoutCheck(executionId, dagInfoRet.getDag());
-
-                List<ExecutionInfo> executionRoutes = Optional.ofNullable(dagInfoRet.getDagInvokeMsg())
-                        .map(DAGInvokeMsg::getExecutionRoutes)
-                        .orElse(new ArrayList<>());
-                executionRoutes.stream()
-                        .max(Comparator.comparingInt(ExecutionInfo::getIndex))
-                        .filter(executionInfo -> executionInfo.getExecutionType() == FunctionPattern.FLOW_SYNC)
-                        .ifPresent(executionInfo -> {
-                            try {
-                                String parentDAGExecutionId = executionInfo.getExecutionId();
-                                String taskInfoName = executionInfo.getTaskInfoName();
-                                TaskStatus taskStatus = calculateSubFlowTaskStatus(dagInfoRet);
-                                TaskInvokeMsg taskInvokeMsg = Optional.ofNullable(dagInfoRet.getDagInvokeMsg())
-                                        .map(it -> TaskInvokeMsg.builder().code(it.getCode()).msg(it.getMsg()).ext(it.getExt()).build())
-                                        .orElse(null);
-                                NotifyInfo notifyInfo = NotifyInfo.builder().taskInfoName(taskInfoName).taskStatus(taskStatus).taskInvokeMsg(taskInvokeMsg).build();
-                                finishTaskSync(parentDAGExecutionId, TaskCategory.FUNCTION.getValue(), notifyInfo, context);
-                            } catch (Exception e) {
-                                log.warn("finishDAG fails to finish task, executionInfo:{}", executionInfo, e);
-                            }
-                        });
-
-                trialClose(executionId, dagStatus, dagInfoRet, context);
-                
-                // 在 DAG 完成时结束 span
-                dagSpan.setAttribute("status", dagStatus.name());
-                dagSpan.end();
-            }
-        } else {
+        try (Scope ignored = finishDAGSpan.makeCurrent()) {
             ExecutionResult executionResult = finishDAGInternal(executionId, dagInfo, dagStatus, dagInvokeMsg);
 
             DAGInfo dagInfoRet = executionResult.getDagInfo();
@@ -370,7 +352,30 @@ public class DAGOperations {
 
             timeCheckRunner.remDAGFromTimeoutCheck(executionId, dagInfoRet.getDag());
 
+            List<ExecutionInfo> executionRoutes = Optional.ofNullable(dagInfoRet.getDagInvokeMsg())
+                    .map(DAGInvokeMsg::getExecutionRoutes)
+                    .orElse(new ArrayList<>());
+            executionRoutes.stream()
+                    .max(Comparator.comparingInt(ExecutionInfo::getIndex))
+                    .filter(executionInfo -> executionInfo.getExecutionType() == FunctionPattern.FLOW_SYNC)
+                    .ifPresent(executionInfo -> {
+                        try {
+                            String parentDAGExecutionId = executionInfo.getExecutionId();
+                            String taskInfoName = executionInfo.getTaskInfoName();
+                            TaskStatus taskStatus = calculateSubFlowTaskStatus(dagInfoRet);
+                            TaskInvokeMsg taskInvokeMsg = Optional.ofNullable(dagInfoRet.getDagInvokeMsg())
+                                    .map(it -> TaskInvokeMsg.builder().code(it.getCode()).msg(it.getMsg()).ext(it.getExt()).build())
+                                    .orElse(null);
+                            NotifyInfo notifyInfo = NotifyInfo.builder().taskInfoName(taskInfoName).taskStatus(taskStatus).taskInvokeMsg(taskInvokeMsg).build();
+                            finishTaskSync(parentDAGExecutionId, TaskCategory.FUNCTION.getValue(), notifyInfo, context);
+                        } catch (Exception e) {
+                            log.warn("finishDAG fails to finish task, executionInfo:{}", executionInfo, e);
+                        }
+                    });
+
             trialClose(executionId, dagStatus, dagInfoRet, context);
+        }finally {
+            finishDAGSpan.end();
         }
     }
 

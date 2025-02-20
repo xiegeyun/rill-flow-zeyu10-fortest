@@ -74,25 +74,28 @@ public class DAGTraversal {
     }
 
     public void submitTraversal(String executionId, String completedTaskName) {
-        // 获取 execution context
-        Context executionContext = tracerHelper.loadExecutionContext(executionId);
+        // 获取 submitDAG context
+        Context executionContext = tracerHelper.loadExecutionContext(executionId+"-submitDAG");
         if (executionContext == null) {
             executionContext = Context.current();
         }
-        
+
         // 创建子 span
         Span traversalSpan = tracerHelper.getTracer().spanBuilder("submitTraversal")
                 .setAttribute("execution.id", executionId)
                 .setAttribute("completed_task", completedTaskName != null ? completedTaskName : "")
                 .setParent(executionContext)
                 .startSpan();
-        
-        Context finalContext = executionContext.with(traversalSpan);
+
+        Context finalContext = Context.current().with(traversalSpan);
 
         traversalExecutor.execute(new ExecutionRunnable(executionId,() -> {
             try {
                 log.info("submitTraversal begin lock executionId:{}, completedTaskName:{}", executionId, completedTaskName);
                 try (Scope ignored = finalContext.makeCurrent()) {  // 在新线程中恢复 context
+                    // 保存submitTraversal context，维持调用链
+                    tracerHelper.saveExecutionContext(executionId+"-submitTraversal", finalContext);
+
                     Map<String, Object> params = Maps.newHashMap();
                     params.put("executionId", executionId);
                     params.put("completedTaskName", completedTaskName);
@@ -139,14 +142,24 @@ public class DAGTraversal {
     }
 
     public void doTraversal(String executionId, String completedTaskName) {
+        // 获取 submitTraversal Context
+        Context submitTraversalContext = tracerHelper.loadExecutionContext(executionId+"-submitTraversal");
+        if (submitTraversalContext == null) {
+            submitTraversalContext = Context.current();
+        }
+
         // 创建子 span
         Span doTraversalSpan = tracerHelper.getTracer().spanBuilder("doTraversal")
                 .setAttribute("execution.id", executionId)
                 .setAttribute("completed_task", completedTaskName != null ? completedTaskName : "")
-                .setParent(Context.current())
+                .setParent(submitTraversalContext)
                 .startSpan();
-                
+        Context doTraversalContext = Context.current().with(doTraversalSpan);
+
         try (Scope scope = doTraversalSpan.makeCurrent()) {
+            // 保存doTraversal Context，维持调用链
+            tracerHelper.saveExecutionContext(executionId+"-doTraversal", doTraversalContext);
+
             log.info("doTraversal start, executionId:{}", executionId);
             if (StringUtils.isEmpty(completedTaskName) || DAGWalkHelper.getInstance().isAncestorTask(completedTaskName)) {
                 traversalAncestorTasks(executionId);
@@ -159,13 +172,23 @@ public class DAGTraversal {
     }
 
     private void traversalAncestorTasks(String executionId) {
+        // 获取 doTraversal Context
+        Context doTraversalContext = tracerHelper.loadExecutionContext(executionId+"-doTraversal");
+        if (doTraversalContext == null) {
+            doTraversalContext = Context.current();
+        }
+
         // 创建子 span
         Span ancestorSpan = tracerHelper.getTracer().spanBuilder("traversalAncestorTasks")
                 .setAttribute("execution.id", executionId)
-                .setParent(Context.current())
+                .setParent(doTraversalContext)
                 .startSpan();
-                
+        Context traversalAncestorTasksContext = Context.current().with(ancestorSpan);
+
         try (Scope scope = ancestorSpan.makeCurrent()) {
+            // 保存traversalAncestorTasks Context，维持调用链
+            tracerHelper.saveExecutionContext(executionId+"-traversalAncestorTasks", traversalAncestorTasksContext);
+
             DAGInfo dagInfo = dagInfoStorage.getBasicDAGInfo(executionId);
             if (dagInfo == null || dagInfo.getDagStatus().isCompleted()) {
                 return;
